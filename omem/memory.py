@@ -18,7 +18,16 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .client import MemoryClient, OmemClientError
-from .models import AddResult, Entity, Event, Evidence, MemoryItem, SearchResult
+from .models import (
+    AddResult,
+    Entity,
+    Event,
+    EventContext,
+    Evidence,
+    ExtractedKnowledge,
+    MemoryItem,
+    SearchResult,
+)
 from .types import CanonicalTurnV1
 
 # Default cloud service endpoint
@@ -87,7 +96,7 @@ class Memory:
         """Initialize Memory client.
 
         Args:
-            api_key: API key for authentication (required). Get yours at qbrain.ai
+            api_key: API key for authentication (required). Get yours at omnimemory.ai
             endpoint: Memory service URL. Defaults to cloud service.
                 Override for self-hosted deployments.
             user_id: User identifier for multi-user isolation within your app.
@@ -122,7 +131,10 @@ class Memory:
         self,
         conversation_id: str,
         messages: Sequence[Dict[str, Any]],
-    ) -> None:
+        *,
+        wait: bool = False,
+        timeout_s: float = 60.0,
+    ) -> Optional["AddResult"]:
         """Save conversation messages to memory.
 
         This is the primary way to store conversations. Messages are sent to
@@ -134,6 +146,8 @@ class Memory:
             messages: List of messages in OpenAI format:
                 [{"role": "user", "content": "Hello"}, ...]
                 Supported fields: role, content (or text), name, timestamp
+            wait: If True, wait for backend processing to complete.
+            timeout_s: Timeout (seconds) when wait=True.
 
         Example:
             >>> mem.add("conv-001", [
@@ -144,12 +158,15 @@ class Memory:
         Note:
             - Call once per conversation (not per message) to avoid fragmentation
             - Memories are searchable after backend processing completes
-            - This method is fire-and-forget; it doesn't wait for completion
+            - Fire-and-forget by default; pass wait=True to block until done
         """
         conv = self.conversation(conversation_id)
         for msg in messages:
             conv.add(msg)
+        if wait:
+            return conv.commit(wait=True, timeout_s=timeout_s)
         conv.commit()  # Fire and forget
+        return None
 
     def conversation(
         self,
@@ -242,6 +259,9 @@ class Memory:
                 text = str(e.get("text") or "").strip()
                 if not text:
                     continue
+                # Prefer tkg_event_id (actual TKG event ID) over event_id (logical ID)
+                # tkg_event_id is needed for get_evidence_for() to work with explain endpoint
+                event_id = str(e.get("tkg_event_id") or e.get("event_id") or "").strip() or None
                 items.append(
                     MemoryItem(
                         text=text,
@@ -249,7 +269,7 @@ class Memory:
                         timestamp=_parse_datetime(e.get("timestamp")),
                         source=str(e.get("source") or "unknown"),
                         entities=list(e.get("entities") or []),
-                        event_id=str(e.get("event_id") or "") or None,
+                        event_id=event_id,
                     )
                 )
 
@@ -511,6 +531,106 @@ class Memory:
                 )
 
         return evidences
+
+    def explain_event(self, item: MemoryItem) -> Optional["EventContext"]:
+        """Get full TKG context for a search result - the real value of extraction.
+
+        This returns everything the TKG learned from the source utterance:
+        - entities: Who/what was mentioned (e.g., "Caroline (PERSON)")
+        - knowledge: Structured facts extracted (e.g., "Caroline went to support group on 2026-01-14")
+        - places: Locations mentioned
+        - utterances: Original source text
+        - temporal context: When this occurred
+
+        The MemoryItem must have an event_id (source: E_graph). Vector-only results
+        (source: E_vec) don't have TKG nodes and will return None.
+
+        Args:
+            item: MemoryItem from mem.search() results.
+
+        Returns:
+            EventContext with full TKG data, or None if not available.
+
+        Example:
+            >>> result = mem.search("Caroline support group", limit=1)
+            >>> ctx = mem.explain_event(result.items[0])
+            >>> if ctx:
+            ...     print(f"Entities: {ctx.entities}")
+            ...     for k in ctx.knowledge:
+            ...         print(f"Fact: {k.summary}")
+        """
+        from .models import EventContext, ExtractedKnowledge
+
+        eid = str(getattr(item, "event_id", None) or "").strip()
+        if not eid:
+            return None
+
+        try:
+            resp = self._client.graph_explain_event(eid)
+        except Exception:
+            return None
+
+        data = resp.get("item") or resp
+        if not isinstance(data, dict):
+            return None
+
+        # Extract entities
+        entities: List[str] = []
+        for ent in data.get("entities") or []:
+            name = ent.get("name", "")
+            etype = ent.get("type", "")
+            if name:
+                entities.append(f"{name} ({etype})" if etype else name)
+
+        # Extract knowledge (structured facts)
+        knowledge: List[ExtractedKnowledge] = []
+        for k in data.get("knowledge") or []:
+            summary = k.get("summary") or k.get("text") or ""
+            if summary:
+                knowledge.append(
+                    ExtractedKnowledge(
+                        id=str(k.get("id") or ""),
+                        summary=summary,
+                        importance=float(k.get("importance") or 0.5),
+                        timestamp=_parse_datetime(k.get("t_abs_start")),
+                    )
+                )
+
+        # Extract places
+        places: List[str] = []
+        for p in data.get("places") or []:
+            name = p.get("name", "")
+            if name:
+                places.append(name)
+
+        # Extract source utterances
+        utterances: List[str] = []
+        for u in data.get("utterances") or []:
+            text = u.get("raw_text") or u.get("text") or ""
+            if text:
+                utterances.append(text)
+
+        # Get event summary and timestamp
+        event = data.get("event") or {}
+        summary = event.get("summary") or item.text
+        timestamp = _parse_datetime(event.get("t_abs_start"))
+
+        # Get session kind from timeslices
+        session_kind = None
+        timeslices = data.get("timeslices") or []
+        if timeslices:
+            session_kind = timeslices[0].get("kind")
+
+        return EventContext(
+            event_id=eid,
+            summary=summary,
+            entities=entities,
+            knowledge=knowledge,
+            places=places,
+            utterances=utterances,
+            timestamp=timestamp,
+            session_kind=session_kind,
+        )
 
     def search_events(
         self,

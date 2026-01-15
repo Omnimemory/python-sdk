@@ -22,7 +22,16 @@ For more information, see: https://github.com/VisMemo/python-sdk
 """
 
 from .memory import Memory, Conversation
-from .models import MemoryItem, SearchResult, Entity, Event, AddResult
+from .models import (
+    MemoryItem,
+    SearchResult,
+    Entity,
+    Event,
+    Evidence,
+    EventContext,
+    ExtractedKnowledge,
+    AddResult,
+)
 from .client import (
     MemoryClient,
     SessionBuffer,
@@ -41,7 +50,7 @@ from .client import (
 from .types import CanonicalAttachmentV1, CanonicalTurnV1, JobStatusV1, SessionStatusV1
 
 # Version
-__version__ = "2.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     # Version
@@ -53,6 +62,9 @@ __all__ = [
     "SearchResult",
     "Entity",
     "Event",
+    "Evidence",
+    "EventContext",
+    "ExtractedKnowledge",
     "AddResult",
     # Error types
     "OmemClientError",

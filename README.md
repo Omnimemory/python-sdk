@@ -15,16 +15,20 @@ from omem import Memory
 
 mem = Memory(api_key="qbk_xxx")  # That's it!
 
-# Save a conversation
+# Save a multi-speaker conversation
 mem.add("conv-001", [
-    {"role": "user", "content": "明天和 Caroline 去西湖"},
-    {"role": "assistant", "content": "好的，我记住了"},
+    {"role": "user", "name": "Caroline", "content": "Hey Mel! Good to see you! How have you been?"},
+    {"role": "user", "name": "Melanie", "content": "Hey Caroline! I'm swamped with the kids & work. What's up with you?"},
+    {"role": "user", "name": "Caroline", "content": "I went to a LGBTQ support group yesterday and it was so powerful."},
+    {"role": "user", "name": "Melanie", "content": "That's awesome! I'm so proud of you. How did it go?"},
+    {"role": "user", "name": "Caroline", "content": "It was meaningful. I'm also going to a tech conference in Seattle next week."},
 ])
 
-# Search memories
-result = mem.search("我什么时候去西湖？")
+# Search memories (after backend processing ~5-30 seconds)
+result = mem.search("What did Caroline do recently?")
 if result:
-    print(result.to_prompt())
+    for item in result:
+        print(f"[{item.score:.2f}] {item.text}")
 ```
 
 ## API Reference
@@ -50,27 +54,39 @@ mem = Memory(api_key="...", endpoint="https://my-instance.com/api/v1/memory")
 **Parameters:**
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `api_key` | ✅ Yes | - | Your API key. Get one at [qbrain.ai](https://qbrain.ai) |
+| `api_key` | ✅ Yes | - | Your API key. Get one at [omnimemory.ai](https://omnimemory.ai) |
 | `user_id` | No | `None` | Optional end-user identifier (future/backend-controlled isolation in SaaS) |
 | `endpoint` | No | Cloud service | Override for self-hosted deployments |
 | `timeout_s` | No | `30.0` | Request timeout in seconds |
 
-### `add(conversation_id, messages)`
+### `add(conversation_id, messages, *, wait=False, timeout_s=60.0)`
 
-Save conversation messages to memory. Fire-and-forget — returns immediately.
+Save conversation messages to memory. Fire-and-forget by default; optionally wait for processing to finish.
 
 ```python
 mem.add("conv-001", [
     {"role": "user", "content": "Book a meeting tomorrow at 3pm"},
     {"role": "assistant", "content": "Done! Meeting scheduled."},
 ])
+
+# Wait for completion (immediate searchability)
+result = mem.add("conv-002", [
+    {"role": "user", "content": "Summarize yesterday's meeting"},
+], wait=True, timeout_s=30.0)
+if result and result.completed:
+    mem.search("yesterday meeting")
 ```
 
 **Parameters:**
 - `conversation_id` — Unique identifier for the conversation
-- `messages` — List of messages in OpenAI format (`role`, `content`)
+- `messages` — List of messages with:
+  - `role` — "user" for human speakers, "assistant" for AI responses
+  - `content` — The message text
+  - `name` — (Optional) Speaker name for multi-party conversations
+- `wait` — If True, block until backend processing completes (default False)
+- `timeout_s` — Timeout when `wait=True` (default 60s)
 
-**Note:** Call once per conversation (not per message) for best results. Memories become searchable after backend processing (~5-30 seconds).
+**Note:** Call once per conversation (not per message) for best results. Fire-and-forget mode becomes searchable after backend processing (~5-30 seconds). With `wait=True`, `add` returns an `AddResult` containing `job_id` and `completed` status.
 
 ### `search(query, *, limit=10, fail_silent=False)`
 
@@ -92,6 +108,21 @@ if result:
 - Truthy check: `if result: ...`
 - Iteration: `for item in result: ...`
 - LLM formatting: `result.to_prompt()`
+
+## Models
+
+The SDK provides strongly-typed return models:
+
+| Model | Description |
+|-------|-------------|
+| `SearchResult` | Search results container with `items`, `latency_ms`, iteration support |
+| `MemoryItem` | Single search result with `text`, `score`, `timestamp`, `event_id` |
+| `EventContext` | Full TKG context: `entities`, `knowledge`, `places`, `utterances` |
+| `ExtractedKnowledge` | Structured fact with `summary`, `importance`, `timestamp` |
+| `Evidence` | Source utterance with `text`, `confidence`, `timestamp` |
+| `Entity` | TKG entity with `id`, `name`, `type`, `aliases` |
+| `Event` | TKG event with `id`, `summary`, `timestamp` |
+| `AddResult` | Ingestion result with `job_id`, `completed` status |
 
 ## Error Handling
 
@@ -133,6 +164,68 @@ vector spaces; per-user isolation is a potential future feature controlled via
 backend `memory_policy`, not SDK-side `user_tokens`.
 
 For strict isolation in SaaS **today**, use separate accounts / API keys.
+
+## TKG Features: Knowledge & Evidence
+
+The SDK exposes the Temporal Knowledge Graph (TKG) for advanced use cases.
+
+### `explain_event(item)` — Full TKG Context
+
+Get everything the TKG extracted from a search result:
+
+```python
+result = mem.search("Caroline support group", limit=1)
+item = result.items[0]
+
+ctx = mem.explain_event(item)
+if ctx:
+    # Entities mentioned
+    print(f"Entities: {ctx.entities}")  # ['Caroline (PERSON)']
+    
+    # Extracted facts (the real value!)
+    for k in ctx.knowledge:
+        print(f"Fact: {k.summary}")  # "Caroline went to support group on 2026-01-14"
+        print(f"  Importance: {k.importance}")
+    
+    # Source utterances
+    print(f"Sources: {ctx.utterances}")
+```
+
+### `get_entity_history(entity)` — All Evidence for an Entity
+
+Get all utterances/evidence related to an entity:
+
+```python
+history = mem.get_entity_history("Caroline", limit=10)
+for e in history:
+    print(f"[{e.confidence:.2f}] {e.text}")
+    print(f"  Timestamp: {e.timestamp}")
+```
+
+### `get_evidence_for(item)` — Source for a Search Result
+
+Trace a search result back to its source utterance:
+
+```python
+result = mem.search("tech conference", limit=1)
+item = result.items[0]
+
+evidence = mem.get_evidence_for(item)
+for e in evidence:
+    print(f"Source: {e.text}")
+```
+
+### `resolve_entity(name)` — Entity Resolution
+
+Resolve an entity name to its TKG ID:
+
+```python
+entity = mem.resolve_entity("Caroline")
+if entity:
+    print(f"ID: {entity.id}")
+    print(f"Type: {entity.type}")  # PERSON
+    print(f"Aliases: {entity.aliases}")
+```
 
 ## Advanced: Conversation Buffer
 

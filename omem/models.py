@@ -100,6 +100,38 @@ class Evidence:
 
 
 @dataclass
+class ExtractedKnowledge:
+    """A structured fact extracted by TKG from raw utterances."""
+
+    id: str
+    summary: str  # The extracted fact (e.g., "Caroline went to support group on 2026-01-14")
+    importance: float = 0.5
+    timestamp: Optional[datetime] = None
+
+
+@dataclass
+class EventContext:
+    """Full TKG context for an event - the value extracted from raw data.
+    
+    This represents everything the TKG learned from an utterance:
+    - entities: Who/what was mentioned
+    - knowledge: Structured facts extracted
+    - places: Locations mentioned
+    - utterances: Original source text
+    - timestamp: When this occurred
+    """
+
+    event_id: str
+    summary: str  # Event summary (often the original utterance)
+    entities: List[str] = field(default_factory=list)  # Entity names
+    knowledge: List[ExtractedKnowledge] = field(default_factory=list)  # Extracted facts
+    places: List[str] = field(default_factory=list)  # Location names
+    utterances: List[str] = field(default_factory=list)  # Source utterance texts
+    timestamp: Optional[datetime] = None
+    session_kind: Optional[str] = None  # e.g., "dialog_session"
+
+
+@dataclass
 class AddResult:
     """Result of adding messages to memory."""
 
@@ -112,6 +144,8 @@ class AddResult:
 __all__ = [
     "MemoryItem",
     "SearchResult",
+    "ExtractedKnowledge",
+    "EventContext",
     "Entity",
     "Event",
     "Evidence",

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "VisMemo", email = "support@qbrain.ai"}
+    {name = "VisMemo", email = "support@omnimemory.ai"}
 ]
 keywords = ["ai", "memory", "agent", "llm", "vector-search", "long-term-memory"]
 classifiers = [
