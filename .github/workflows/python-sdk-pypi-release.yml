@@ -1,0 +1,104 @@
+name: Release Python SDK to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 1.2.3 or v1.2.3"
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v3
+      - name: Normalize version
+        id: vars
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          if [[ -z "$VERSION" ]]; then
+            echo "Version is empty after normalization" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Update version files
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          root = Path(".")
+          pyproject = root / "pyproject.toml"
+          init_py = root / "omem" / "__init__.py"
+
+          def replace(path: Path, pattern: str, repl: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              new_text, count = re.subn(pattern, repl, text, count=1, flags=re.MULTILINE)
+              if count != 1:
+                  raise SystemExit(f"Expected 1 replacement in {path}, got {count}")
+              path.write_text(new_text, encoding="utf-8")
+
+          replace(pyproject, r'^version\s*=\s*"[^\"]+"', f'version = "{version}"')
+          replace(init_py, r'^__version__\s*=\s*"[^\"]+"', f'__version__ = "{version}"')
+          PY
+      - name: Commit version bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml omem/__init__.py
+          if git diff --cached --quiet; then
+            echo "No version changes to commit" >&2
+            exit 1
+          fi
+          git commit -m "chore(python-sdk): release omem v${{ steps.vars.outputs.version }}"
+      - name: Create tag
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.vars.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists" >&2
+            exit 1
+          fi
+          git tag "$TAG"
+      - name: Push changes
+        run: |
+          set -euo pipefail
+          git push origin HEAD
+          git push origin "v${{ steps.vars.outputs.version }}"
+      - name: Build package
+        run: |
+          set -euo pipefail
+          uv pip install --system build
+          python -m build
+      - name: Publish to PyPI (OIDC)
+        if: ${{ !secrets.PYPI_API_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+      - name: Publish to PyPI (API token)
+        if: ${{ secrets.PYPI_API_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist
