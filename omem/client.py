@@ -755,8 +755,19 @@ def _http_error_from_response(resp: httpx.Response, *, request_id: Optional[str]
     err_code = None
     message = None
     if payload:
-        err_code = payload.get("error") or payload.get("detail")
+        err_code = payload.get("error") or payload.get("detail") or payload.get("code")
         message = payload.get("message")
+        
+        # Provide helpful hints for common configuration errors
+        if err_code == "missing_core_requirements":
+            missing = payload.get("missing", [])
+            if any(k in missing for k in ["llm_api_key", "llm_provider", "llm_model"]):
+                message = (
+                    f"{message}. "
+                    "You need to configure an LLM provider in your dashboard: "
+                    "Go to Dashboard → Memory Policy → Add LLM Key. "
+                    "See https://omnimemory.ai/docs/quickstart for setup instructions."
+                )
     snippet = ""
     if not err_code and not message:
         try:

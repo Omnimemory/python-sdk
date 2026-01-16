@@ -8,6 +8,19 @@ Python SDK for the omem memory service — give your AI agents long-term memory.
 pip install omem
 ```
 
+## Prerequisites
+
+Before using the SDK, you must configure an LLM provider in your dashboard:
+
+1. Sign up at [omnimemory.ai](https://omnimemory.ai)
+2. Go to **Dashboard → API Keys** and create a new API key (starts with `qbk_`)
+3. Go to **Dashboard → Memory Policy** and add your LLM key:
+   - Enter your LLM API key (e.g., OpenAI `sk-...`)
+   - Select provider (OpenAI, DeepSeek, Qwen, etc.) and model
+   - Set binding to "All API Keys"
+
+> **Why?** Omni Memory uses LLMs to extract entities, events, and semantic knowledge from your conversations. Without an LLM configuration, you'll get a `Missing required data for core ingest` error.
+
 ## Quick Start
 
 ```python
