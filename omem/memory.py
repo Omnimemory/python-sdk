@@ -213,6 +213,7 @@ class Memory:
         query: str,
         *,
         limit: int = 10,
+        session_id: Optional[str] = None,
         fail_silent: bool = False,
         debug: bool = False,
     ) -> SearchResult:
@@ -221,6 +222,9 @@ class Memory:
         Args:
             query: Search question (e.g., "我什么时候去西湖？")
             limit: Maximum number of results (default: 10)
+            session_id: Optional conversation/session ID to filter results.
+                When provided, only memories from that specific session are returned.
+                Use this for multi-tenant apps or to scope retrieval to a conversation.
             fail_silent: If True, return empty result on error instead of raising.
                 Use this to ensure memory failures don't break your agent.
             debug: If True, include detailed debug info in the result.
@@ -236,6 +240,10 @@ class Memory:
             >>> if result:
             ...     print(result.to_prompt())  # Inject into LLM context
 
+            >>> # Filter by session/conversation
+            >>> result = mem.search("project details", session_id="project-alpha")
+            >>> # Only returns memories from "project-alpha" session
+
             >>> # With fail_silent for robustness
             >>> result = mem.search("query", fail_silent=True)
             >>> # Returns empty SearchResult on error, never raises
@@ -248,6 +256,7 @@ class Memory:
         try:
             resp = self._client.retrieve_dialog_v2(
                 query=query,
+                session_id=session_id,
                 topk=limit,
                 with_answer=False,
                 debug=debug,
