@@ -83,6 +83,8 @@ class TestPackageMetadata:
             ).read_text(encoding="utf-8")
             assert "twine>=5,<6" not in workflow
             assert '"twine>=5"' in workflow
+            assert "actions/checkout@v6" in workflow
+            assert "actions/setup-python@v6" in workflow
 
     def test_public_metadata_uses_memaura_branding(self):
         root = Path(__file__).resolve().parents[1]
