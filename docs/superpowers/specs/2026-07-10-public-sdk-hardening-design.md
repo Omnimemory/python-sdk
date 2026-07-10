@@ -55,6 +55,13 @@ their unreachable bodies are removed rather than left as runtime exceptions.
 `MemoryItem` no longer exposes an `event_id`, because the public SDK has no
 supported API that can use it.
 
+Session-status removal includes every caller: `Memory.conversation()` no longer
+accepts `sync_cursor`, `Conversation` has no cursor-sync state or helper, and
+the low-level `MemoryClient.session()`, `SessionBuffer`, `get_session()`, and
+`SessionStatusV1` are removed. Ingest-job polling remains available only through
+the high-level `add(..., wait=True)` and `Conversation.commit(..., wait=True)`
+flows.
+
 ## Data and Error Handling
 
 The supported request payloads remain unchanged: API keys authenticate through
@@ -81,19 +88,32 @@ changes. No document contains credentials or platform-specific secrets.
 ## CI and Release Flow
 
 A normal CI workflow runs on pull requests and pushes to `main` with Python
-3.8, 3.11, and 3.13. Each matrix entry runs the test suite. One build job also
-creates the wheel and sdist, runs `twine check`, and installs the wheel in a
-fresh virtual environment for an import smoke test.
+3.8, 3.11, and 3.13. The Python 3.13 classifier is added to `pyproject.toml`.
+Each matrix entry runs the test suite. One build job also creates the wheel and
+sdist, runs `twine check`, and installs the wheel in a fresh virtual environment
+for an import smoke test.
 
-The manual PyPI workflow receives a version input and performs this order:
+The manual PyPI workflow receives a version input and an optional
+`resume_publish` boolean. A normal release (`resume_publish=false`) performs
+this order:
 
-1. Validate the normalized PEP 440 version and update the two version files in
-   its temporary checkout.
-2. Install test and build tools, run the full test suite, build artifacts, run
-   `twine check`, and perform the fresh-wheel import smoke test.
+1. Normalize and validate the PEP 440 version, verify that `v<version>` does
+   not already exist, and query PyPI to verify that `omem==<version>` has not
+   already been published. Any non-404 PyPI response other than a successful
+   absence check fails the release before a commit or tag is created.
+2. Update the two version files in the temporary checkout, then install test
+   and build tools, run the full test suite, build artifacts, run `twine check`,
+   and perform the fresh-wheel import smoke test.
 3. Commit the verified version change, create the version tag, and push both.
 4. Publish the already verified artifacts through the configured PyPI trusted
    publisher or `PYPI_API_TOKEN` secret.
+
+When a publish fails after the tag has been pushed, a maintainer reruns the
+workflow with `resume_publish=true`. Resume mode checks out `v<version>`,
+verifies that both version files equal the requested version, reruns the same
+test/build/check/smoke verification, verifies that the version remains absent
+from PyPI, and publishes without creating or pushing a commit or tag. A tag
+that points to a different version is always rejected.
 
 The release job uses a protected PyPI environment when configured. A failed
 publish can be retried from the verified tag; no untested commit or tag is
@@ -119,12 +139,13 @@ release verification step outside this repository.
 ## Delivery Sequence
 
 1. Remove unsupported code and models, reduce exports, update version, and add
-   behavior tests.
+   behavior tests; commit the API boundary as one change.
 2. Align bilingual README and add public repository documents while removing
-   the internal architecture document.
-3. Add normal CI and reorder the release workflow.
-4. Remove tracked Python bytecode, run the complete test/build/install checks,
-   then commit the three independently reviewable changes.
+   the internal architecture document; commit documentation as one change.
+3. Add normal CI and reorder the release workflow; commit release automation as
+   one change.
+4. Remove tracked Python bytecode; run the complete test/build/install checks,
+   then commit this repository-hygiene change separately.
 
 ## Non-Goals
 
