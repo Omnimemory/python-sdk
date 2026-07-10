@@ -37,11 +37,3 @@ class JobStatusV1:
     last_error: Optional[Dict[str, Any]] = None
     metrics: Optional[Dict[str, Any]] = None
 
-
-@dataclass(frozen=True)
-class SessionStatusV1:
-    session_id: str
-    latest_job_id: Optional[str] = None
-    latest_status: Optional[str] = None
-    cursor_committed: Optional[str] = None
-

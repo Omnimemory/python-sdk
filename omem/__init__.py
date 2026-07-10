@@ -18,25 +18,16 @@ Quick Start:
     >>> if result:
     ...     print(result.to_prompt())
 
-For more information, see: https://github.com/VisMemo/python-sdk
+For more information, see: https://github.com/Omnimemory/python-sdk
 """
 
 from .memory import Memory, Conversation
 from .models import (
     MemoryItem,
     SearchResult,
-    Entity,
-    Event,
-    Evidence,
-    EventContext,
-    ExtractedKnowledge,
     AddResult,
 )
 from .client import (
-    MemoryClient,
-    SessionBuffer,
-    CommitHandle,
-    RetryConfig,
     OmemClientError,
     OmemHttpError,
     OmemAuthError,
@@ -47,10 +38,9 @@ from .client import (
     OmemValidationError,
     OmemServerError,
 )
-from .types import CanonicalAttachmentV1, CanonicalTurnV1, JobStatusV1, SessionStatusV1
 
 # Version
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     # Version
@@ -60,11 +50,6 @@ __all__ = [
     "Conversation",
     "MemoryItem",
     "SearchResult",
-    "Entity",
-    "Event",
-    "Evidence",
-    "EventContext",
-    "ExtractedKnowledge",
     "AddResult",
     # Error types
     "OmemClientError",
@@ -76,13 +61,4 @@ __all__ = [
     "OmemPayloadTooLargeError",
     "OmemValidationError",
     "OmemServerError",
-    # Low-level API (for advanced use cases)
-    "MemoryClient",
-    "SessionBuffer",
-    "CommitHandle",
-    "RetryConfig",
-    "CanonicalAttachmentV1",
-    "CanonicalTurnV1",
-    "JobStatusV1",
-    "SessionStatusV1",
 ]

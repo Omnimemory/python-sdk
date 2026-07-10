@@ -4,19 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omem"
-version = "1.0.0"
+version = "2.0.0"
 description = "Python SDK for the omem memory service — give your AI agents long-term memory"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
-    {name = "VisMemo", email = "support@omnimemory.ai"}
+    {name = "OmniMemory", email = "support@omnimemory.ai"}
 ]
 keywords = ["ai", "memory", "agent", "llm", "vector-search", "long-term-memory"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -24,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -38,14 +38,14 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/VisMemo/python-sdk"
-Documentation = "https://github.com/VisMemo/python-sdk"
-Repository = "https://github.com/VisMemo/python-sdk"
-Issues = "https://github.com/VisMemo/python-sdk/issues"
+Homepage = "https://github.com/Omnimemory/python-sdk"
+Documentation = "https://github.com/Omnimemory/python-sdk"
+Repository = "https://github.com/Omnimemory/python-sdk"
+Issues = "https://github.com/Omnimemory/python-sdk/issues"
 
 [tool.setuptools]
-# Auto-discover packages (finds the omem/ directory)
-packages = {find = {}}
+# Package only the public SDK module; keep repo tests out of user installs.
+packages = {find = {include = ["omem*"], exclude = ["tests*"]}}
 
 [tool.setuptools.package-data]
 omem = ["py.typed"]
@@ -55,4 +55,3 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-
