@@ -1,2 +1,2 @@
-"""Tests for omem SDK."""
+"""Tests for memaura SDK."""
 

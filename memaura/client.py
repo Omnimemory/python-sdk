@@ -4,21 +4,21 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import json
 import warnings
 
 import httpx
 
-from .types import CanonicalAttachmentV1, CanonicalTurnV1, JobStatusV1, SessionStatusV1
+from .types import CanonicalAttachmentV1, CanonicalTurnV1, JobStatusV1
 
 
-class OmemClientError(RuntimeError):
+class MemAuraClientError(RuntimeError):
     pass
 
 
-class OmemHttpError(OmemClientError):
+class MemAuraHttpError(MemAuraClientError):
     def __init__(
         self,
         message: str,
@@ -35,31 +35,31 @@ class OmemHttpError(OmemClientError):
         self.retry_after_s = retry_after_s
 
 
-class OmemAuthError(OmemHttpError):
+class MemAuraAuthError(MemAuraHttpError):
     pass
 
 
-class OmemForbiddenError(OmemHttpError):
+class MemAuraForbiddenError(MemAuraHttpError):
     pass
 
 
-class OmemRateLimitError(OmemHttpError):
+class MemAuraRateLimitError(MemAuraHttpError):
     pass
 
 
-class OmemQuotaExceededError(OmemHttpError):
+class MemAuraQuotaExceededError(MemAuraHttpError):
     pass
 
 
-class OmemPayloadTooLargeError(OmemHttpError):
+class MemAuraPayloadTooLargeError(MemAuraHttpError):
     pass
 
 
-class OmemValidationError(OmemHttpError):
+class MemAuraValidationError(MemAuraHttpError):
     pass
 
 
-class OmemServerError(OmemHttpError):
+class MemAuraServerError(MemAuraHttpError):
     pass
 
 
@@ -71,26 +71,7 @@ def _normalize_base_url(base_url: str) -> str:
 
 
 def _normalize_user_tokens(user_tokens: Sequence[str]) -> List[str]:
-    """
-    Normalize and validate user_tokens.
-
-    SaaS mode:
-        The public SDK no longer sends user_tokens in request payloads. Isolation
-        is handled by the SaaS control plane (gateway/api-dev) based on the API
-        key → account_id/tenant_id mapping. This helper is therefore only used
-        in self-hosted or advanced scenarios.
-
-    Self-hosted mode (future design sketch):
-        Prefer an X-User-ID header over client-controlled user_tokens in the
-        payload:
-
-            - SDK sends X-User-ID header derived from Memory(user_id=...)
-            - Server enforces isolation based on tenant_id + user_id
-            - Client cannot escalate privileges by forging tokens
-
-        The existing user_tokens field remains for backward compatibility but
-        should be considered a legacy surface.
-    """
+    """Normalize user tokens for direct compatible-gateway integrations."""
     out = [str(x).strip() for x in (user_tokens or []) if str(x).strip()]
     if not out:
         raise ValueError("user_tokens must be non-empty")
@@ -140,15 +121,6 @@ def _coerce_job_status(payload: Dict[str, Any]) -> JobStatusV1:
     )
 
 
-def _coerce_session_status(payload: Dict[str, Any]) -> SessionStatusV1:
-    return SessionStatusV1(
-        session_id=str(payload.get("session_id") or ""),
-        latest_job_id=(str(payload.get("latest_job_id")) if payload.get("latest_job_id") else None),
-        latest_status=(str(payload.get("latest_status")) if payload.get("latest_status") else None),
-        cursor_committed=(str(payload.get("cursor_committed")) if payload.get("cursor_committed") else None),
-    )
-
-
 @dataclass(frozen=True)
 class RetryConfig:
     max_retries: int = 3
@@ -179,110 +151,6 @@ class CommitHandle:
             time.sleep(float(poll_interval_s))
 
 
-class SessionBuffer:
-    def __init__(
-        self,
-        *,
-        client: "MemoryClient",
-        session_id: str,
-        cursor_last_committed: Optional[str] = None,
-    ) -> None:
-        sid = str(session_id or "").strip()
-        if not sid:
-            raise ValueError("session_id is required")
-        self._client = client
-        self.session_id = sid
-        self.cursor_last_committed = cursor_last_committed
-        self._turns: List[CanonicalTurnV1] = []
-        self._next_turn_index = 1
-
-    def append_turn(
-        self,
-        *,
-        role: str,
-        text: str,
-        timestamp_iso: Optional[str] = None,
-        name: Optional[str] = None,
-        attachments: Optional[Iterable[CanonicalAttachmentV1]] = None,
-        meta: Optional[Dict[str, Any]] = None,
-        turn_id: Optional[str] = None,
-    ) -> CanonicalTurnV1:
-        r = str(role or "").strip().lower()
-        if r not in ("user", "assistant", "tool", "system"):
-            raise ValueError("role must be one of: user|assistant|tool|system")
-        t = str(text or "")
-        if not t.strip():
-            raise ValueError("text is empty")
-
-        if turn_id is None:
-            turn_id = _turn_id_from_index(self._next_turn_index)
-            self._next_turn_index += 1
-        else:
-            turn_id = str(turn_id).strip()
-            if not turn_id:
-                raise ValueError("turn_id is empty")
-            # Best-effort bump next index if it looks like our canonical format.
-            if turn_id.startswith("t") and turn_id[1:].isdigit():
-                try:
-                    idx = int(turn_id[1:])
-                    self._next_turn_index = max(self._next_turn_index, idx + 1)
-                except Exception:
-                    pass
-
-        turn = CanonicalTurnV1(
-            turn_id=turn_id,
-            role=r,  # type: ignore[arg-type]
-            name=(str(name).strip() if name else None),
-            timestamp_iso=(str(timestamp_iso).strip() if timestamp_iso else None),
-            text=t,
-            attachments=(list(attachments) if attachments is not None else None),
-            meta=(dict(meta) if isinstance(meta, dict) else None),
-        )
-        self._turns.append(turn)
-        return turn
-
-    def turns(self) -> List[CanonicalTurnV1]:
-        return list(self._turns)
-
-    def commit(self, *, commit_id: Optional[str] = None) -> CommitHandle:
-        delta = self._delta_turns()
-        if not delta:
-            # Treat as a no-op commit but still return a handle-like object for uniform call sites.
-            cid = str(commit_id or uuid.uuid4())
-            return CommitHandle(client=self._client, job_id="", session_id=self.session_id, commit_id=cid)
-        cid = str(commit_id or uuid.uuid4())
-        handle = self._client.ingest_dialog_v1(
-            session_id=self.session_id,
-            turns=delta,
-            commit_id=cid,
-            base_turn_id=(self.cursor_last_committed or None),
-        )
-        # Client-side cursor advances optimistically to the last submitted turn.
-        self.cursor_last_committed = delta[-1].turn_id
-        return handle
-
-    def sync_cursor_from_server(self) -> Optional[str]:
-        ss = self._client.get_session(self.session_id)
-        self.cursor_last_committed = ss.cursor_committed
-        if ss.cursor_committed and ss.cursor_committed.startswith("t") and ss.cursor_committed[1:].isdigit():
-            try:
-                idx = int(ss.cursor_committed[1:])
-                self._next_turn_index = max(self._next_turn_index, idx + 1)
-            except Exception:
-                pass
-        return self.cursor_last_committed
-
-    def _delta_turns(self) -> List[CanonicalTurnV1]:
-        base = str(self.cursor_last_committed or "").strip()
-        if not base:
-            return list(self._turns)
-        out: List[CanonicalTurnV1] = []
-        for t in self._turns:
-            if t.turn_id > base:
-                out.append(t)
-        return out
-
-
 class MemoryClient:
     def __init__(
         self,
@@ -292,6 +160,7 @@ class MemoryClient:
         user_tokens: Optional[Sequence[str]] = None,
         memory_domain: str = "dialog",
         api_token: Optional[str] = None,
+        device_no: Optional[str] = None,
         timeout_s: float = 30.0,
         retry_config: Optional[RetryConfig] = None,
         http: Optional[httpx.Client] = None,
@@ -324,22 +193,13 @@ class MemoryClient:
 
         self.memory_domain = str(memory_domain or "dialog").strip() or "dialog"
         self.api_token = (str(api_token).strip() if api_token else None)
+        self.device_no = (str(device_no).strip() if device_no else None)
         self._timeout_s = float(timeout_s)
         self._retry = retry_config or RetryConfig()
         self._http = http or httpx.Client(timeout=self._timeout_s)
 
     def close(self) -> None:
         self._http.close()
-
-    def session(self, *, session_id: str, sync_cursor: bool = False) -> SessionBuffer:
-        buf = SessionBuffer(client=self, session_id=session_id)
-        if sync_cursor:
-            try:
-                buf.sync_cursor_from_server()
-            except Exception:
-                # Cursor sync is best-effort.
-                pass
-        return buf
 
     def ingest_dialog_v1(
         self,
@@ -349,6 +209,7 @@ class MemoryClient:
         commit_id: Optional[str] = None,
         base_turn_id: Optional[str] = None,
         client_meta: Optional[Dict[str, Any]] = None,
+        device_no: Optional[str] = None,
     ) -> CommitHandle:
         # SaaS mode: backend (Gateway + BFF) owns user_tokens and client_meta.
         saas_mode = self._mode == "saas" or self.tenant_id == "__from_api_key__"
@@ -364,15 +225,21 @@ class MemoryClient:
             "commit_id": cid,
             "cursor": {"base_turn_id": (str(base_turn_id).strip() if base_turn_id else None)},
         }
-        # Only attach user_tokens/client_meta when not in SaaS mode.
+        effective_device_no = self._effective_device_no(device_no or _device_no_from_meta(client_meta))
+
+        # Only attach user_tokens/client_meta when not in SaaS mode, except
+        # device_no which is a public data-plane routing field in SaaS.
         if not saas_mode and self.user_tokens:
             body["user_tokens"] = list(self.user_tokens)
         if not saas_mode and client_meta:
             body["client_meta"] = dict(client_meta)
+        elif effective_device_no:
+            body["client_meta"] = {"device_no": effective_device_no}
         payload = self._request_json(
             "POST",
             "/ingest",
             json_body=body,
+            device_no=effective_device_no,
         )
         job_id = str(payload.get("job_id") or "").strip()
         return CommitHandle(client=self, job_id=job_id, session_id=sid, commit_id=cid)
@@ -383,13 +250,6 @@ class MemoryClient:
             raise ValueError("job_id is required")
         payload = self._request_json("GET", f"/ingest/jobs/{jid}")
         return _coerce_job_status(payload)
-
-    def get_session(self, session_id: str) -> SessionStatusV1:
-        sid = str(session_id or "").strip()
-        if not sid:
-            raise ValueError("session_id is required")
-        payload = self._request_json("GET", f"/ingest/sessions/{sid}")
-        return _coerce_session_status(payload)
 
     def retrieve_dialog_v2(
         self,
@@ -405,6 +265,7 @@ class MemoryClient:
         entity_hints: Optional[Sequence[str]] = None,
         time_hints: Optional[Dict[str, Any]] = None,
         client_meta: Optional[Dict[str, Any]] = None,
+        device_no: Optional[str] = None,
         strategy: str = "dialog_v2",
     ) -> Dict[str, Any]:
         # SaaS mode: backend (Gateway + BFF) owns user_tokens and client_meta.
@@ -417,12 +278,13 @@ class MemoryClient:
         strategy_norm = str(strategy or "dialog_v2").strip().lower()
         if strategy_norm not in ("dialog_v1", "dialog_v2"):
             strategy_norm = "dialog_v2"
+        effective_device_no = self._effective_device_no(device_no or _device_no_from_meta(client_meta))
         body: Dict[str, Any] = {
             "memory_domain": str(self.memory_domain),
-            "run_id": sid,
+            "group_id": sid,
             "query": q,
             "strategy": strategy_norm,
-            "topk": int(topk),
+            "top_k": int(topk),
             "task": str(task or "GENERAL"),
             "debug": bool(debug),
             "with_answer": bool(with_answer),
@@ -439,207 +301,46 @@ class MemoryClient:
                 body["user_tokens"] = list(self.user_tokens)
         if not saas_mode and client_meta:
             body["client_meta"] = dict(client_meta)
-        return self._request_json("POST", "/retrieval", json_body=body)
+        elif effective_device_no:
+            body["client_meta"] = {"device_no": effective_device_no}
+        return self._request_json("POST", "/retrieval", json_body=body, device_no=effective_device_no)
 
-    def debug_config(self) -> Dict[str, Any]:
-        """Fetch effective backend configuration for this client (if supported).
-
-        This calls the SaaS/backend debug endpoint. Not all deployments expose it;
-        in that case an OmemHttpError (e.g., 404) will be raised.
-        """
-        return self._request_json("GET", "/debug/config")
-
-    # ========== TKG Graph API Methods ==========
-
-    def graph_resolve_entities(
+    def retrieve_dialog_hybrid(
         self,
-        name: str,
         *,
-        entity_type: Optional[str] = None,
-        limit: int = 20,
-    ) -> Dict[str, Any]:
-        """Resolve entity by name.
-
-        Args:
-            name: Entity name to resolve.
-            entity_type: Optional type filter (e.g., "person", "place").
-            limit: Maximum number of results.
-
-        Returns:
-            Dict with "items" list of resolved entities.
-        """
-        params: Dict[str, Any] = {"name": name, "limit": limit}
-        if entity_type:
-            params["type"] = entity_type
-        return self._request_json("GET", "/graph/v0/entities/resolve", params=params)
-
-    def graph_explain_event(self, event_id: str) -> Dict[str, Any]:
-        """Get structured evidence chain for a single event.
-
-        Backend: GET /graph/v0/explain/event/{event_id}
-
-        Args:
-            event_id: Logical event ID from retrieval/search (MemoryItem.event_id).
-
-        Returns:
-            Dict with \"item\" containing event, entities, evidences, utterances, knowledge, etc.
-        """
-        eid = str(event_id or "").strip()
-        if not eid:
-            raise ValueError("event_id is required")
-        return self._request_json("GET", f"/graph/v0/explain/event/{eid}")
-
-    def graph_entity_timeline(
-        self,
-        entity_id: str,
-        *,
-        limit: int = 200,
-    ) -> Dict[str, Any]:
-        """Get timeline of events/evidences for an entity.
-
-        Args:
-            entity_id: Entity ID.
-            limit: Maximum number of results.
-
-        Returns:
-            Dict with timeline data.
-        """
-        return self._request_json(
-            "GET",
-            f"/graph/v0/entities/{entity_id}/timeline",
-            params={"limit": limit},
-        )
-
-    def graph_search_events(
-        self,
         query: str,
-        *,
-        topk: int = 10,
-        source_id: Optional[str] = None,
-        include_evidence: bool = True,
+        session_id: Optional[str] = None,
+        top_k: int = 10,
+        device_no: Optional[str] = None,
+        debug: bool = False,
     ) -> Dict[str, Any]:
-        """Search events using fulltext/BM25.
-
-        Args:
-            query: Search query.
-            topk: Maximum number of results.
-            source_id: Optional source filter.
-            include_evidence: Whether to include evidence details.
-
-        Returns:
-            Dict with search results.
-        """
+        q = str(query or "").strip()
+        if not q:
+            raise ValueError("query is required")
+        effective_device_no = self._effective_device_no(device_no)
+        if not effective_device_no:
+            raise ValueError("device_no is required for hybrid retrieval")
+        sid = str(session_id).strip() if session_id else None
         body: Dict[str, Any] = {
-            "query": query,
-            "topk": topk,
-            "include_evidence": include_evidence,
+            "query": q,
+            "top_k": int(top_k),
+            "group_id": sid,
+            "client_meta": {"device_no": effective_device_no},
         }
-        if source_id:
-            body["source_id"] = source_id
-        return self._request_json("POST", "/graph/v1/search", json_body=body)
-
-    def graph_list_events(
-        self,
-        *,
-        entity_id: Optional[str] = None,
-        place_id: Optional[str] = None,
-        limit: int = 100,
-    ) -> Dict[str, Any]:
-        """List events with optional filters.
-
-        Args:
-            entity_id: Filter by entity involvement.
-            place_id: Filter by place.
-            limit: Maximum number of results.
-
-        Returns:
-            Dict with "items" list of events.
-        """
-        params: Dict[str, Any] = {"limit": limit}
-        if entity_id:
-            params["entity_id"] = entity_id
-        if place_id:
-            params["place_id"] = place_id
-        return self._request_json("GET", "/graph/v0/events", params=params)
-
-    def graph_timeslices_range(
-        self,
-        start: str,
-        end: str,
-        *,
-        granularity: Optional[str] = None,
-        limit: int = 100,
-    ) -> Dict[str, Any]:
-        """Query timeslices within a time range.
-
-        Args:
-            start: ISO format start time.
-            end: ISO format end time.
-            granularity: Optional granularity filter (e.g., "day", "hour").
-            limit: Maximum number of results.
-
-        Returns:
-            Dict with "items" list of timeslices.
-        """
-        params: Dict[str, Any] = {"start": start, "end": end, "limit": limit}
-        if granularity:
-            params["granularity"] = granularity
-        return self._request_json("GET", "/graph/v0/timeslices/range", params=params)
-
-    def graph_timeslice_events(
-        self,
-        timeslice_id: str,
-        *,
-        limit: int = 50,
-    ) -> Dict[str, Any]:
-        """Get events within a specific timeslice.
-
-        Args:
-            timeslice_id: Timeslice ID.
-            limit: Maximum number of results.
-
-        Returns:
-            Dict with "items" list of events.
-        """
+        if debug:
+            body["debug"] = True
         return self._request_json(
-            "GET",
-            f"/graph/v0/timeslices/{timeslice_id}/events",
-            params={"limit": limit},
+            "POST",
+            "/retrieval/hybrid",
+            json_body=body,
+            device_no=effective_device_no,
         )
 
-    def graph_entity_evidences(
-        self,
-        entity_id: str,
-        *,
-        subtype: Optional[str] = None,
-        source_id: Optional[str] = None,
-        limit: int = 50,
-    ) -> Dict[str, Any]:
-        """Get evidences for an entity.
+    def _effective_device_no(self, device_no: Optional[str] = None) -> Optional[str]:
+        value = str(device_no or self.device_no or "").strip()
+        return value or None
 
-        Args:
-            entity_id: Entity ID.
-            subtype: Optional evidence subtype filter.
-            source_id: Optional source ID filter.
-            limit: Maximum number of results (default: 50, max: 200).
-
-        Returns:
-            Dict with "items" list of evidence objects.
-
-        Backend: GET /graph/v0/entities/{entity_id}/evidences
-        """
-        params: Dict[str, Any] = {"limit": limit}
-        if subtype:
-            params["subtype"] = subtype
-        if source_id:
-            params["source_id"] = source_id
-        return self._request_json(
-            "GET",
-            f"/graph/v0/entities/{entity_id}/evidences",
-            params=params,
-        )
-
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, *, device_no: Optional[str] = None) -> Dict[str, str]:
         h: Dict[str, str] = {}
         
         # In SaaS mode, gateway injects x-tenant-id header from API key lookup.
@@ -657,6 +358,10 @@ class MemoryClient:
                 # Self-hosted mode: use X-API-Token and Bearer
                 h["X-API-Token"] = token
                 h["Authorization"] = f"Bearer {token}"
+
+        effective_device_no = self._effective_device_no(device_no)
+        if effective_device_no:
+            h["X-Device-No"] = effective_device_no
         
         return h
 
@@ -667,9 +372,10 @@ class MemoryClient:
         *,
         json_body: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        device_no: Optional[str] = None,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
-        headers = self._headers()
+        headers = self._headers(device_no=device_no)
         request_id = _ensure_request_id(headers)
 
         attempt = 0
@@ -681,7 +387,7 @@ class MemoryClient:
                     _sleep_backoff(self._retry, attempt, None)
                     attempt += 1
                     continue
-                raise OmemClientError(f"http_request_failed: {type(exc).__name__}: {exc}") from exc
+                raise MemAuraClientError(f"http_request_failed: {type(exc).__name__}: {exc}") from exc
 
             if resp.status_code >= 400:
                 err = _http_error_from_response(resp, request_id=request_id)
@@ -692,14 +398,23 @@ class MemoryClient:
                 raise err
 
             try:
-                return resp.json()  # type: ignore[no-any-return]
+                payload = resp.json()
             except Exception:
                 # Keep raw for diagnostics.
                 try:
                     txt = resp.text
                 except Exception:
                     txt = "<unreadable>"
-                raise OmemClientError(f"invalid_json_response: {txt[:500]}")
+                raise MemAuraClientError(f"invalid_json_response: {txt[:500]}")
+            return _unwrap_api_payload(payload, request_id=request_id)
+
+
+def _device_no_from_meta(client_meta: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(client_meta, dict):
+        return None
+    raw = client_meta.get("device_no")
+    value = str(raw).strip() if raw is not None else ""
+    return value or None
 
 
 def _ensure_request_id(headers: Dict[str, str]) -> str:
@@ -750,23 +465,25 @@ def _parse_error_payload(resp: httpx.Response) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _http_error_from_response(resp: httpx.Response, *, request_id: Optional[str]) -> OmemHttpError:
+def _http_error_from_response(resp: httpx.Response, *, request_id: Optional[str]) -> MemAuraHttpError:
     payload = _parse_error_payload(resp)
     err_code = None
     message = None
     if payload:
-        err_code = payload.get("error") or payload.get("detail") or payload.get("code")
+        data = payload.get("data")
+        data_obj = data if isinstance(data, dict) else {}
+        err_code = data_obj.get("error") or payload.get("error") or payload.get("detail") or payload.get("code")
         message = payload.get("message")
         
         # Provide helpful hints for common configuration errors
         if err_code == "missing_core_requirements":
-            missing = payload.get("missing", [])
+            missing = payload.get("missing") or data_obj.get("missing") or []
             if any(k in missing for k in ["llm_api_key", "llm_provider", "llm_model"]):
                 message = (
                     f"{message}. "
                     "You need to configure an LLM provider in your dashboard: "
                     "Go to Dashboard → Memory Policy → Add LLM Key. "
-                    "See https://omnimemory.ai/docs/quickstart for setup instructions."
+                    "See the MemAura quickstart documentation for setup instructions."
                 )
     snippet = ""
     if not err_code and not message:
@@ -778,23 +495,23 @@ def _http_error_from_response(resp: httpx.Response, *, request_id: Optional[str]
     retry_after = _parse_retry_after(resp)
     status = int(resp.status_code)
 
-    cls: type[OmemHttpError]
+    cls: type[MemAuraHttpError]
     if status == 401:
-        cls = OmemAuthError
+        cls = MemAuraAuthError
     elif status == 403:
-        cls = OmemForbiddenError
+        cls = MemAuraForbiddenError
     elif status == 402:
-        cls = OmemQuotaExceededError
+        cls = MemAuraQuotaExceededError
     elif status == 429:
-        cls = OmemRateLimitError
+        cls = MemAuraRateLimitError
     elif status == 413:
-        cls = OmemPayloadTooLargeError
+        cls = MemAuraPayloadTooLargeError
     elif status == 400:
-        cls = OmemValidationError
+        cls = MemAuraValidationError
     elif status >= 500:
-        cls = OmemServerError
+        cls = MemAuraServerError
     else:
-        cls = OmemHttpError
+        cls = MemAuraHttpError
 
     return cls(
         f"http_{status}: {detail}",
@@ -803,3 +520,53 @@ def _http_error_from_response(resp: httpx.Response, *, request_id: Optional[str]
         request_id=(resp.headers.get("X-Request-ID") or resp.headers.get("x-request-id") or request_id),
         retry_after_s=retry_after,
     )
+
+
+def _error_class_for_status(status: int) -> type[MemAuraHttpError]:
+    if status == 401:
+        return MemAuraAuthError
+    if status == 403:
+        return MemAuraForbiddenError
+    if status == 402:
+        return MemAuraQuotaExceededError
+    if status == 429:
+        return MemAuraRateLimitError
+    if status == 413:
+        return MemAuraPayloadTooLargeError
+    if status == 400:
+        return MemAuraValidationError
+    if status >= 500:
+        return MemAuraServerError
+    return MemAuraHttpError
+
+
+def _unwrap_api_payload(payload: Any, *, request_id: Optional[str]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise MemAuraClientError("invalid_json_response: expected object")
+
+    if "success" not in payload or "data" not in payload:
+        return payload
+
+    success = bool(payload.get("success"))
+    try:
+        status = int(payload.get("code") or (200 if success else 500))
+    except Exception:
+        status = 200 if success else 500
+
+    data = payload.get("data")
+    data_obj = data if isinstance(data, dict) else {}
+    err_code = data_obj.get("error") or payload.get("error") or (payload.get("code") if not success else None)
+    message = payload.get("message") or err_code or "request_failed"
+
+    if not success or status >= 400:
+        cls = _error_class_for_status(status)
+        raise cls(
+            f"http_{status}: {message}",
+            status_code=status,
+            error=(str(err_code) if err_code else None),
+            request_id=request_id,
+        )
+
+    if isinstance(data, dict):
+        return data
+    return {"data": data}

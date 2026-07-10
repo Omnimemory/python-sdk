@@ -3,20 +3,17 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "omem"
+name = "memaura"
 version = "1.0.0"
-description = "Python SDK for the omem memory service — give your AI agents long-term memory"
+description = "Python SDK for the MemAura memory service"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
-authors = [
-    {name = "VisMemo", email = "support@omnimemory.ai"}
-]
+license = "MIT"
+authors = [{name = "MemAura"}]
 keywords = ["ai", "memory", "agent", "llm", "vector-search", "long-term-memory"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -24,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -33,26 +31,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=7.0.0,<9",
     "pytest-asyncio>=0.21.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/VisMemo/python-sdk"
-Documentation = "https://github.com/VisMemo/python-sdk"
-Repository = "https://github.com/VisMemo/python-sdk"
-Issues = "https://github.com/VisMemo/python-sdk/issues"
-
 [tool.setuptools]
-# Auto-discover packages (finds the omem/ directory)
-packages = {find = {}}
+# Package only the public SDK module; keep repo tests out of user installs.
+packages = {find = {include = ["memaura*"], exclude = ["tests*"]}}
 
 [tool.setuptools.package-data]
-omem = ["py.typed"]
+memaura = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-

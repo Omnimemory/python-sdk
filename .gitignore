@@ -12,9 +12,11 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.env
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 
@@ -38,3 +40,4 @@ PYPI_CHECKLIST.md
 PYPI_TOKEN_GUIDE.md
 PROCESS.md
 upload_testpypi.sh
+docs/superpowers/

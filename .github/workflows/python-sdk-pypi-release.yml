@@ -1,19 +1,29 @@
-name: Release Python SDK to PyPI
+name: Release MemAura to PyPI
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, e.g. 1.2.3 or v1.2.3"
+        description: "Canonical PEP 440 version, for example 1.0.0"
         required: true
         type: string
+      resume_publish:
+        description: "Publish an existing release tag without creating another tag"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: memaura-pypi-release
+  cancel-in-progress: false
 
 jobs:
-  release:
+  prepare-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     defaults:
       run:
         shell: bash
@@ -24,81 +34,194 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v3
-      - name: Normalize version
-        id: vars
+      - name: Install verification dependencies
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
-          VERSION="${VERSION#v}"
-          if [[ -z "$VERSION" ]]; then
-            echo "Version is empty after normalization" >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-      - name: Update version files
+          python -m pip install --upgrade "pip<25" "setuptools>=61" wheel
+          python -m pip install ".[dev]" "build>=1.2,<1.3" "twine>=5,<6" "packaging>=23"
+      - name: Validate release version
+        id: version
         env:
-          VERSION: ${{ steps.vars.outputs.version }}
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from packaging.version import InvalidVersion, Version
+
+          raw = os.environ["RAW_VERSION"].strip()
+          canonical_input = raw[1:] if raw.startswith("v") else raw
+          try:
+              version = str(Version(canonical_input))
+          except InvalidVersion as exc:
+              raise SystemExit(f"Invalid PEP 440 version: {raw}") from exc
+          if canonical_input != version:
+              raise SystemExit(
+                  f"Use canonical PEP 440 version {version}, not {raw}"
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"value={version}\n")
+              output.write(f"tag=v{version}\n")
+          PY
+      - name: Select normal release source or existing tag
+        env:
+          RESUME_PUBLISH: ${{ inputs.resume_publish }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$RESUME_PUBLISH" == "true" ]]; then
+            git rev-parse "${TAG}^{commit}" >/dev/null
+            git checkout --detach "$TAG"
+          else
+            if [[ "$GITHUB_REF_TYPE" != "branch" || "$GITHUB_REF_NAME" != "main" ]]; then
+              echo "Normal releases must run from main" >&2
+              exit 1
+            fi
+            if git rev-parse "${TAG}^{commit}" >/dev/null 2>&1; then
+              echo "Tag ${TAG} already exists; use resume_publish to retry publication" >&2
+              exit 1
+            fi
+          fi
+      - name: Check PyPI version availability
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from urllib.error import HTTPError, URLError
+          from urllib.request import urlopen
+
+          version = os.environ["VERSION"]
+          url = f"https://pypi.org/pypi/memaura/{version}/json"
+          try:
+              with urlopen(url, timeout=15) as response:
+                  if response.status == 200:
+                      raise SystemExit(f"memaura {version} is already published on PyPI")
+                  raise SystemExit(f"Unexpected PyPI status {response.status}")
+          except HTTPError as exc:
+              if exc.code != 404:
+                  raise SystemExit(f"PyPI preflight failed with HTTP {exc.code}") from exc
+          except URLError as exc:
+              raise SystemExit(f"PyPI preflight could not reach PyPI: {exc}") from exc
+          PY
+      - name: Prepare versioned source
+        env:
+          RESUME_PUBLISH: ${{ inputs.resume_publish }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import os
           import re
+          from datetime import datetime, timezone
           from pathlib import Path
 
-          version = os.environ["VERSION"]
           root = Path(".")
+          version = os.environ["VERSION"]
+          resume = os.environ["RESUME_PUBLISH"] == "true"
           pyproject = root / "pyproject.toml"
-          init_py = root / "omem" / "__init__.py"
+          init_py = root / "memaura" / "__init__.py"
+          changelogs = (
+              (root / "CHANGELOG.md", "Unreleased"),
+              (root / "CHANGELOG.zh.md", "未发布"),
+          )
 
-          def replace(path: Path, pattern: str, repl: str) -> None:
-              text = path.read_text(encoding="utf-8")
-              new_text, count = re.subn(pattern, repl, text, count=1, flags=re.MULTILINE)
-              if count != 1:
-                  raise SystemExit(f"Expected 1 replacement in {path}, got {count}")
-              path.write_text(new_text, encoding="utf-8")
+          def current_version(path: Path, pattern: str) -> str:
+              match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+              if not match:
+                  raise SystemExit(f"Could not read version from {path}")
+              return match.group(1)
 
-          replace(pyproject, r'^version\s*=\s*"[^\"]+"', f'version = "{version}"')
-          replace(init_py, r'^__version__\s*=\s*"[^\"]+"', f'__version__ = "{version}"')
+          if resume:
+              if current_version(pyproject, r'^version\s*=\s*"([^"]+)"') != version:
+                  raise SystemExit("Tagged pyproject version does not match release input")
+              if current_version(init_py, r'^__version__\s*=\s*"([^"]+)"') != version:
+                  raise SystemExit("Tagged package version does not match release input")
+              for path, _ in changelogs:
+                  if not re.search(rf'^## {re.escape(version)} - (?!Unreleased|未发布)', path.read_text(encoding="utf-8"), re.MULTILINE):
+                      raise SystemExit(f"Tagged release notes are not finalized in {path}")
+          else:
+              def replace(path: Path, pattern: str, replacement: str) -> None:
+                  text = path.read_text(encoding="utf-8")
+                  updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+                  if count != 1:
+                      raise SystemExit(f"Expected one replacement in {path}, found {count}")
+                  path.write_text(updated, encoding="utf-8")
+
+              replace(pyproject, r'^version\s*=\s*"[^"]+"', f'version = "{version}"')
+              replace(init_py, r'^__version__\s*=\s*"[^"]+"', f'__version__ = "{version}"')
+              released_on = datetime.now(timezone.utc).date().isoformat()
+              for path, status in changelogs:
+                  replace(
+                      path,
+                      rf'^## {re.escape(version)} - {re.escape(status)}$',
+                      f"## {version} - {released_on}",
+                  )
           PY
-      - name: Commit version bump
+      - name: Test and compile release source
+        run: |
+          set -euo pipefail
+          python -m pytest -q
+          PYTHONPYCACHEPREFIX=/tmp/memaura-pyc python -m compileall -q memaura tests
+      - name: Build and validate release artifacts
+        run: |
+          set -euo pipefail
+          rm -rf build dist
+          python -m build
+          python -m twine check dist/*
+      - name: Smoke test release wheel
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          python -m venv "$smoke_dir/venv"
+          "$smoke_dir/venv/bin/python" -m pip install --quiet --force-reinstall dist/*.whl
+          "$smoke_dir/venv/bin/python" - <<'PY'
+          import os
+          import memaura
+          from memaura import Memory, SearchResult
+
+          assert memaura.__version__ == os.environ["VERSION"]
+          print(Memory.__name__, SearchResult.__name__)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memaura-dist
+          path: dist/
+          if-no-files-found: error
+      - name: Commit and push normal release tag
+        if: ${{ !inputs.resume_publish }}
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml omem/__init__.py
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml memaura/__init__.py CHANGELOG.md CHANGELOG.zh.md
           if git diff --cached --quiet; then
-            echo "No version changes to commit" >&2
+            echo "Release source did not change" >&2
             exit 1
           fi
-          git commit -m "chore(python-sdk): release omem v${{ steps.vars.outputs.version }}"
-      - name: Create tag
-        run: |
-          set -euo pipefail
-          TAG="v${{ steps.vars.outputs.version }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists" >&2
-            exit 1
-          fi
-          git tag "$TAG"
-      - name: Push changes
-        run: |
-          set -euo pipefail
-          git push origin HEAD
-          git push origin "v${{ steps.vars.outputs.version }}"
-      - name: Build package
-        run: |
-          set -euo pipefail
-          uv pip install --system build
-          python -m build
-      - name: Publish to PyPI (OIDC)
-        if: ${{ !secrets.PYPI_API_TOKEN }}
+          git commit -m "chore(release): memaura v${VERSION}"
+          git tag -a "$TAG" -m "MemAura Python SDK $VERSION"
+          git push --atomic origin HEAD "refs/tags/$TAG"
+
+  publish:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: memaura-dist
+          path: dist/
+      - name: Publish verified artifacts to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist
-      - name: Publish to PyPI (API token)
-        if: ${{ secrets.PYPI_API_TOKEN }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          packages-dir: dist
+          packages-dir: dist/
