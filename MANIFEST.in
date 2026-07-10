@@ -1,8 +1,16 @@
 include LICENSE
 include README.md
+include README.zh.md
+include CONTRIBUTING.md
+include CONTRIBUTING.zh.md
+include SECURITY.md
+include SECURITY.zh.md
+include CHANGELOG.md
+include CHANGELOG.zh.md
+include RELEASE.md
+include RELEASE.zh.md
 include pyproject.toml
 recursive-include omem *.py
 recursive-include omem py.typed
 global-exclude __pycache__
 global-exclude *.py[cod]
-

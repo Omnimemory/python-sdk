@@ -63,6 +63,39 @@ class TestPackageMetadata:
         assert "TKG 能力" not in readme_zh
         assert "include README.zh.md" in manifest
 
+        for removed_feature in ("user_id", "event_id", "Graph/TKG", "debug", "Self-hosted"):
+            assert removed_feature not in readme_en
+            assert removed_feature not in readme_zh
+
+        signature = "search(query, *, limit=10, session_id=None, fail_silent=False)"
+        assert signature in readme_en
+        assert signature in readme_zh
+        assert "[Contributing](CONTRIBUTING.md)" in readme_en
+        assert "[贡献指南](CONTRIBUTING.zh.md)" in readme_zh
+        assert "[Release Guide](RELEASE.md)" in readme_en
+        assert "[发布指南](RELEASE.zh.md)" in readme_zh
+        assert (root / "CONTRIBUTING.md").is_file()
+        assert (root / "CONTRIBUTING.zh.md").is_file()
+        assert (root / "SECURITY.md").is_file()
+        assert (root / "SECURITY.zh.md").is_file()
+        assert (root / "CHANGELOG.md").is_file()
+        assert (root / "CHANGELOG.zh.md").is_file()
+        assert (root / "RELEASE.md").is_file()
+        assert (root / "RELEASE.zh.md").is_file()
+        assert not (root / "SAAS_ARCHITECTURE_ALIGNMENT.md").exists()
+
+        for filename in (
+            "CONTRIBUTING.md",
+            "CONTRIBUTING.zh.md",
+            "SECURITY.md",
+            "SECURITY.zh.md",
+            "CHANGELOG.md",
+            "CHANGELOG.zh.md",
+            "RELEASE.md",
+            "RELEASE.zh.md",
+        ):
+            assert f"include {filename}" in manifest
+
     def test_no_local_env_or_bytecode_files_are_tracked(self):
         root = Path(__file__).resolve().parents[1]
         tracked = set(
