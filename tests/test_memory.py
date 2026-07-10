@@ -59,9 +59,8 @@ class TestPackageMetadata:
         assert ci_workflow.is_file()
         ci_text = ci_workflow.read_text(encoding="utf-8")
         release_text = release_workflow.read_text(encoding="utf-8")
-        assert '"3.8"' in ci_text
-        assert '"3.11"' in ci_text
-        assert '"3.13"' in ci_text
+        for python_version in ("3.8", "3.9", "3.10", "3.11", "3.12", "3.13"):
+            assert f'"{python_version}"' in ci_text
         assert "resume_publish" in release_text
         assert "id-token: write" in release_text
         assert "PYPI_API_TOKEN" not in release_text
