@@ -66,6 +66,24 @@ class TestPackageMetadata:
         assert "id-token: write" in release_text
         assert "PYPI_API_TOKEN" not in release_text
 
+    def test_build_metadata_supports_python_38_setuptools(self):
+        root = Path(__file__).resolve().parents[1]
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+        assert 'license = {text = "MIT"}' in pyproject
+
+    def test_workflows_allow_a_metadata_24_compatible_twine(self):
+        root = Path(__file__).resolve().parents[1]
+        for workflow_name in (
+            "python-sdk-ci.yml",
+            "python-sdk-pypi-release.yml",
+        ):
+            workflow = (
+                root / ".github" / "workflows" / workflow_name
+            ).read_text(encoding="utf-8")
+            assert "twine>=5,<6" not in workflow
+            assert '"twine>=5"' in workflow
+
     def test_public_metadata_uses_memaura_branding(self):
         root = Path(__file__).resolve().parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
