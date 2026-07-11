@@ -71,7 +71,7 @@ class TestPackageMetadata:
         root = Path(__file__).resolve().parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
 
-        assert 'license = "MIT"' in pyproject
+        assert 'license = {text = "MIT"}' in pyproject
 
     def test_workflows_allow_a_metadata_24_compatible_twine(self):
         root = Path(__file__).resolve().parents[1]
