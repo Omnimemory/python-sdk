@@ -24,10 +24,12 @@ from memaura import Memory
 
 memory = Memory(api_key="qbk_xxx")
 
-memory.add("conv-001", [
+job = memory.add("conv-001", [
     {"role": "user", "content": "Caroline is visiting Seattle next week."},
     {"role": "assistant", "content": "I will remember that."},
 ])
+
+awaited = memory.jobs.wait(job.job_id)
 
 # Processing is asynchronous. Use wait=True when the next step needs the result now.
 result = memory.search("Where is Caroline going next week?")
@@ -47,37 +49,47 @@ Memory(api_key, *, endpoint=None, device_no=None, timeout_s=30.0)
 | --- | --- |
 | `api_key` | Required MemAura API key. |
 | `endpoint` | Optional MemAura-compatible gateway URL. The default is the cloud gateway. |
-| `device_no` | Optional device identifier. When present, `search()` uses hybrid retrieval. |
+| `device_no` | Optional device identifier. When present, requests use the device-scoped memory namespace. |
 | `timeout_s` | Per-request timeout in seconds. |
 
-### `add(conversation_id, messages, *, wait=False, timeout_s=60.0)`
+### `add(conversation_id, messages, *, commit_id=None, group_id=None, group_name=None, device_no=None, wait=False, timeout_s=60.0)`
 
-Stores a complete conversation. The default call returns immediately after the
-ingest job is accepted. With `wait=True`, it returns an `AddResult` after the
-job reaches a terminal state or the timeout expires.
+Stores a complete conversation and always returns an `AddResult` acknowledgement
+with the ingest `job_id`, `session_id`, `status`, and `status_url`. With
+`wait=True`, `completed` is true only for successful terminal statuses such as
+`succeeded` or `accumulated`.
+
+Each message accepts `role`, `content`, optional `turn_id`, `timestamp`,
+`name`, and `refer_list`. The Router-compatible aliases `id` / `uuid` and
+`referList` are accepted too.
 
 ```python
 result = memory.add(
     "conv-002",
     [{"role": "user", "content": "I prefer morning meetings."}],
+    commit_id="conv-002:turn-1",
     wait=True,
 )
 if result and result.completed:
     print(result.job_id)
 ```
 
-### `search(query, *, limit=10, session_id=None, fail_silent=False)`
+### `search(query, *, limit=10, group_id=None, session_id=None, fail_silent=False)`
 
-Retrieves account-scoped memory. `session_id` narrows the search to the supplied
-conversation group. With `fail_silent=True`, errors return an empty
+Retrieves account-scoped memory. `group_id` narrows the search to the supplied
+memory group; `session_id` remains a compatibility alias. With `fail_silent=True`, errors return an empty
 `SearchResult` whose `error` field explains the failure.
 
+`search()` always uses the regular retrieval endpoint. Use `search_hybrid()`
+explicitly when hybrid retrieval is intended; this remains true even when a
+default `device_no` is configured.
+
 ```python
-result = memory.search("What meeting time do I prefer?", session_id="conv-002")
+result = memory.search("What meeting time do I prefer?", group_id="conv-002")
 print(result.to_prompt())
 ```
 
-### `search_hybrid(query, *, device_no=None, limit=10, session_id=None, fail_silent=False)`
+### `search_hybrid(query, *, device_no=None, limit=10, group_id=None, session_id=None, fail_silent=False)`
 
 Runs device-scoped hybrid retrieval. Supply `device_no` here or when creating
 `Memory`.
@@ -87,6 +99,17 @@ result = memory.search_hybrid(
     "What did this device remember?",
     device_no="device-001",
 )
+```
+
+### `memory.jobs.get(job_id)` and `memory.jobs.wait(job_id, *, timeout_s=60.0, poll_interval_s=0.5)`
+
+Reads or waits for an ingest job without submitting another write. Waiting stops
+at both successful (`succeeded`, `accumulated`, `completed`) and unsuccessful
+terminal statuses; inspect `status` to distinguish them.
+
+```python
+status = memory.jobs.get(job.job_id)
+terminal = memory.jobs.wait(job.job_id, timeout_s=60)
 ```
 
 ### Conversation Buffer
@@ -106,9 +129,10 @@ waits for the corresponding ingest job.
 
 | Model | Description |
 | --- | --- |
-| `MemoryItem` | One retrieved memory with text, score, timestamp, source, and entities. |
-| `SearchResult` | Iterable result container with `items`, `latency_ms`, `error`, and `to_prompt()`. |
-| `AddResult` | Ingest result with the conversation ID, message count, job ID, and completion flag. |
+| `MemoryItem` | Compatibility projection with text, score, timestamp, source, and entities. |
+| `EvidenceDetail` | Normalized Router evidence with event, group, role, speaker, facts, and timestamp. |
+| `SearchResult` | Iterable result container with `items`, `evidence_details`, latency, error, and `to_prompt()`. |
+| `AddResult` | Ingest acknowledgement with conversation, job, session, status, and completion fields. |
 
 ## Error Handling
 

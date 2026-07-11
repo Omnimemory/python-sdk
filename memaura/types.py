@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 
-RoleV1 = Literal["user", "assistant", "tool", "system"]
+RoleV1 = Literal["user", "assistant", "system"]
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class CanonicalTurnV1:
     text: str
     name: Optional[str] = None
     timestamp_iso: Optional[str] = None
+    refer_list: Optional[List[str]] = None
     attachments: Optional[List[CanonicalAttachmentV1]] = None
     meta: Optional[Dict[str, Any]] = None
 
@@ -36,4 +37,3 @@ class JobStatusV1:
     next_retry_at: Optional[str] = None
     last_error: Optional[Dict[str, Any]] = None
     metrics: Optional[Dict[str, Any]] = None
-

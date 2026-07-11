@@ -24,6 +24,7 @@ For more information, see the MemAura SDK documentation.
 from .memory import Memory, Conversation
 from .models import (
     MemoryItem,
+    EvidenceDetail,
     SearchResult,
     AddResult,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "Memory",
     "Conversation",
     "MemoryItem",
+    "EvidenceDetail",
     "SearchResult",
     "AddResult",
     # Error types

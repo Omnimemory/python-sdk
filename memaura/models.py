@@ -26,6 +26,20 @@ class MemoryItem:
 
 
 @dataclass
+class EvidenceDetail:
+    """One normalized Router retrieval evidence item."""
+
+    event_id: str
+    text: str
+    source: Optional[str] = None
+    role: Optional[str] = None
+    sender_name: Optional[str] = None
+    atomic_facts: List[str] = field(default_factory=list)
+    group_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+
+@dataclass
 class SearchResult:
     """Search result containing memory items."""
 
@@ -34,6 +48,8 @@ class SearchResult:
     latency_ms: float = 0.0
     error: Optional[str] = None  # For fail_silent mode
     strategy: Optional[str] = None  # Strategy used (dialog_v1, dialog_v2)
+    evidence_details: List[EvidenceDetail] = field(default_factory=list)
+    requested_group_id: Optional[str] = None
 
     def __iter__(self) -> Iterator[MemoryItem]:
         return iter(self.items)
@@ -68,11 +84,15 @@ class AddResult:
     conversation_id: str
     message_count: int
     job_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: Optional[str] = None
+    status_url: Optional[str] = None
     completed: bool = False
 
 
 __all__ = [
     "MemoryItem",
+    "EvidenceDetail",
     "SearchResult",
     "AddResult",
 ]

@@ -11,9 +11,10 @@ import httpx
 import pytest
 
 import memaura
-from memaura.client import MemoryClient, MemAuraClientError, MemAuraHttpError
+from memaura.client import CommitHandle, MemoryClient, MemAuraClientError, MemAuraHttpError
 from memaura.memory import DEFAULT_ENDPOINT, Conversation, Memory
 from memaura.models import AddResult, MemoryItem, SearchResult
+from memaura.types import CanonicalTurnV1, JobStatusV1
 
 
 PUBLIC_EXPORTS = {
@@ -21,6 +22,7 @@ PUBLIC_EXPORTS = {
     "Memory",
     "Conversation",
     "MemoryItem",
+    "EvidenceDetail",
     "SearchResult",
     "AddResult",
     "MemAuraClientError",
@@ -69,7 +71,7 @@ class TestPackageMetadata:
         root = Path(__file__).resolve().parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
 
-        assert 'license = {text = "MIT"}' in pyproject
+        assert 'license = "MIT"' in pyproject
 
     def test_workflows_allow_a_metadata_24_compatible_twine(self):
         root = Path(__file__).resolve().parents[1]
@@ -119,7 +121,7 @@ class TestPackageMetadata:
             assert removed_feature not in readme_en
             assert removed_feature not in readme_zh
 
-        signature = "search(query, *, limit=10, session_id=None, fail_silent=False)"
+        signature = "search(query, *, limit=10, group_id=None, session_id=None, fail_silent=False)"
         assert signature in readme_en
         assert signature in readme_zh
         assert "[Contributing](CONTRIBUTING.md)" in readme_en
@@ -245,12 +247,15 @@ class TestMemoryInit:
 
 class TestMemoryAdd:
     @patch("memaura.memory.MemoryClient")
-    def test_add_converts_openai_messages_and_fire_forget_returns_none(self, mock_client_cls):
+    def test_add_converts_openai_messages_and_returns_job_ack(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_session.return_value = MagicMock(cursor_committed=None)
         mock_handle = MagicMock()
         mock_handle.job_id = "job-123"
+        mock_handle.session_id = "conv-001"
+        mock_handle.ack_status = "queued"
+        mock_handle.status_url = "/memory/ingest/jobs/job-123"
         mock_client.ingest_dialog_v1.return_value = mock_handle
 
         mem = Memory(api_key="qbk_test", endpoint="https://api-test.example/api/v2/memory")
@@ -262,7 +267,15 @@ class TestMemoryAdd:
             ],
         )
 
-        assert result is None
+        assert result == AddResult(
+            conversation_id="conv-001",
+            message_count=2,
+            job_id="job-123",
+            session_id="conv-001",
+            status="queued",
+            status_url="/memory/ingest/jobs/job-123",
+            completed=False,
+        )
         mock_client.ingest_dialog_v1.assert_called_once()
         call_kwargs = mock_client.ingest_dialog_v1.call_args.kwargs
         assert call_kwargs["session_id"] == "conv-001"
@@ -287,6 +300,38 @@ class TestMemoryAdd:
         assert result.completed is True
         assert result.job_id == "job-789"
         mock_handle.wait.assert_called_once()
+
+    @patch("memaura.memory.MemoryClient")
+    def test_add_returns_job_ack_and_forwards_idempotency_and_group_fields(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.ingest_dialog_v1.return_value = MagicMock(
+            job_id="job-123",
+            session_id="session-1",
+            ack_status="queued",
+            status_url="/memory/ingest/jobs/job-123",
+        )
+
+        result = Memory(api_key="qbk_test").add(
+            "session-1",
+            [{"role": "user", "content": "Remember this"}],
+            commit_id="commit-1",
+            group_id="group-1",
+            group_name="Project One",
+        )
+
+        assert result == AddResult(
+            conversation_id="session-1",
+            message_count=1,
+            job_id="job-123",
+            session_id="session-1",
+            status="queued",
+            status_url="/memory/ingest/jobs/job-123",
+            completed=False,
+        )
+        assert mock_client.ingest_dialog_v1.call_args.kwargs["commit_id"] == "commit-1"
+        assert mock_client.ingest_dialog_v1.call_args.kwargs["group_id"] == "group-1"
+        assert mock_client.ingest_dialog_v1.call_args.kwargs["group_name"] == "Project One"
 
 
 class TestConversation:
@@ -343,6 +388,9 @@ class TestConversation:
         with pytest.raises(ValueError, match="role must be one of"):
             conv.add({"role": "invalid", "content": "Test"})
 
+        with pytest.raises(ValueError, match="role must be one of"):
+            conv.add({"role": "tool", "content": "Unsupported by the v2 data-plane contract"})
+
     def test_conversation_validates_content(self):
         conv = Conversation(MagicMock(), "conv-001")
 
@@ -355,6 +403,20 @@ class TestConversation:
 
         assert len(conv._buffer) == 1
         assert conv._buffer[0].text == "Hello via text field"
+
+    def test_conversation_preserves_router_turn_id_and_references(self):
+        conv = Conversation(MagicMock(), "conv-001")
+        conv.add(
+            {
+                "role": "user",
+                "content": "Follow up on the prior message",
+                "turn_id": "turn-custom",
+                "refer_list": ["turn-previous"],
+            }
+        )
+
+        assert conv._buffer[0].turn_id == "turn-custom"
+        assert conv._buffer[0].refer_list == ["turn-previous"]
 
 
 class TestMemorySearch:
@@ -378,26 +440,82 @@ class TestMemorySearch:
         mock_client.retrieve_dialog_hybrid.assert_not_called()
 
     @patch("memaura.memory.MemoryClient")
-    def test_search_with_device_uses_hybrid_retrieval(self, mock_client_cls):
+    def test_search_with_device_keeps_regular_retrieval_explicit(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.retrieve_dialog_hybrid.return_value = {
-            "evidence_details": [{"text": "Hybrid hit", "score": 0.93, "source": "hybrid"}],
-            "strategy": "hybrid",
+        mock_client.retrieve_dialog_v2.return_value = {
+            "evidence_details": [{"text": "Regular hit", "source": "regular"}],
+            "strategy": "regular",
         }
 
         result = Memory(api_key="qbk_test", device_no="device-001").search("meeting", limit=3)
 
         assert len(result) == 1
-        assert result.items[0].text == "Hybrid hit"
-        assert result.strategy == "hybrid"
-        mock_client.retrieve_dialog_hybrid.assert_called_once_with(
+        assert result.items[0].text == "Regular hit"
+        assert result.strategy == "regular"
+        mock_client.retrieve_dialog_v2.assert_called_once_with(
             query="meeting",
             session_id=None,
-            top_k=3,
-            device_no=None,
+            topk=3,
+            with_answer=False,
         )
-        mock_client.retrieve_dialog_v2.assert_not_called()
+        mock_client.retrieve_dialog_hybrid.assert_not_called()
+
+    @patch("memaura.memory.MemoryClient")
+    def test_search_accepts_group_id_and_keeps_session_id_as_compatibility_alias(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.retrieve_dialog_v2.return_value = {"evidence_details": []}
+
+        Memory(api_key="qbk_test").search("meeting", group_id="group-1")
+
+        mock_client.retrieve_dialog_v2.assert_called_once_with(
+            query="meeting",
+            session_id="group-1",
+            topk=10,
+            with_answer=False,
+        )
+
+    @patch("memaura.memory.MemoryClient")
+    def test_search_rejects_conflicting_group_and_session_ids(self, mock_client_cls):
+        with pytest.raises(ValueError, match="group_id and session_id"):
+            Memory(api_key="qbk_test").search(
+                "meeting",
+                group_id="group-1",
+                session_id="session-1",
+            )
+
+
+class TestJobLifecycle:
+    @pytest.mark.parametrize("status", ["completed", "succeeded", "success", "done", "accumulated", "failed"])
+    def test_commit_handle_stops_for_all_current_terminal_statuses(self, status):
+        client = MagicMock()
+        client.get_job.return_value = JobStatusV1(
+            job_id="job-1",
+            session_id="session-1",
+            status=status,
+        )
+        handle = CommitHandle(
+            client=client,
+            job_id="job-1",
+            session_id="session-1",
+            commit_id="commit-1",
+        )
+
+        assert handle.wait(timeout_s=1, poll_interval_s=0) == client.get_job.return_value
+        client.get_job.assert_called_once_with("job-1")
+
+    @patch("memaura.memory.MemoryClient")
+    def test_memory_exposes_job_operations(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        expected = JobStatusV1(job_id="job-1", session_id="session-1", status="succeeded")
+        mock_client.get_job.return_value = expected
+
+        memory = Memory(api_key="qbk_test")
+
+        assert memory.jobs.get("job-1") == expected
+        assert memory.jobs.wait("job-1", timeout_s=1, poll_interval_s=0) == expected
 
     @patch("memaura.memory.MemoryClient")
     def test_search_hybrid_requires_configured_or_explicit_device_number(self, mock_client_cls):
@@ -419,6 +537,74 @@ class TestMemorySearch:
 
 
 class TestMemoryClientHttp:
+    def test_ingest_uses_current_data_plane_contract_and_returns_ack(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["headers"] = dict(request.headers)
+            captured["json"] = __import__("json").loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                202,
+                json={
+                    "success": True,
+                    "message": "accepted",
+                    "code": 202,
+                    "data": {
+                        "job_id": "job-1",
+                        "session_id": "session-1",
+                        "status": "queued",
+                        "status_url": "/memory/ingest/jobs/job-1",
+                    },
+                },
+                request=request,
+            )
+
+        client = MemoryClient(
+            base_url="https://api.example/api/v2/memory",
+            tenant_id="__from_api_key__",
+            api_token="qbk_test",
+            mode="saas",
+            http=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        handle = client.ingest_dialog_v1(
+            session_id="session-1",
+            group_id="group-1",
+            group_name="Project One",
+            commit_id="commit-1",
+            turns=[
+                CanonicalTurnV1(
+                    turn_id="turn-1",
+                    role="user",
+                    text="Remember this",
+                    refer_list=["turn-0"],
+                )
+            ],
+        )
+
+        assert captured["path"] == "/api/v2/memory/ingest"
+        assert captured["headers"]["x-api-key"] == "qbk_test"
+        assert captured["json"] == {
+            "session_id": "session-1",
+            "group_id": "group-1",
+            "group_name": "Project One",
+            "commit_id": "commit-1",
+            "turns": [
+                {
+                    "turn_id": "turn-1",
+                    "role": "user",
+                    "content": "Remember this",
+                    "sender_name": None,
+                    "timestamp": None,
+                    "refer_list": ["turn-0"],
+                }
+            ],
+        }
+        assert handle.job_id == "job-1"
+        assert handle.ack_status == "queued"
+        assert handle.status_url == "/memory/ingest/jobs/job-1"
+
     def test_unwraps_v2_envelope_data(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/v2/memory/ingest"

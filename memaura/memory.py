@@ -16,13 +16,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from .client import MemoryClient
+from .client import CommitHandle, MemoryClient, is_successful_job_status
 from .models import (
     AddResult,
+    EvidenceDetail,
     MemoryItem,
     SearchResult,
 )
-from .types import CanonicalTurnV1
+from .types import CanonicalTurnV1, JobStatusV1
 
 # Default hosted API endpoint.
 DEFAULT_ENDPOINT = "https://api.omnimemory.cn/api/v2/memory"
@@ -50,6 +51,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _resolve_group_id(group_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+    """Prefer the Router-native group ID while retaining the session alias."""
+    group = str(group_id).strip() if group_id else None
+    session = str(session_id).strip() if session_id else None
+    if group and session and group != session:
+        raise ValueError("group_id and session_id must match when both are provided")
+    return group or session
+
+
 class Memory:
     """High-level Memory API for MemAura.
 
@@ -74,7 +84,7 @@ class Memory:
         ...     print(result.to_prompt())  # Formatted for LLM
 
     Design Principles:
-        - Simple case: `add()` for one-line writes (fire-and-forget)
+        - Simple case: `add()` for one-line writes with an asynchronous receipt
         - Search: `search()` returns strongly-typed results
         - Fail gracefully: Memory failures should not block agent conversations
     """
@@ -92,8 +102,9 @@ class Memory:
         Args:
             api_key: API key for authentication (required).
             endpoint: MemAura-compatible gateway URL. Defaults to the cloud service.
-            device_no: Optional customer-defined device number. When provided,
-                search() uses the hybrid device-scoped retrieval endpoint.
+            device_no: Optional customer-defined device number. It is used as the
+                default for explicit `search_hybrid()` calls; `search()` always
+                uses regular retrieval.
             timeout_s: Request timeout in seconds.
         """
         if not api_key:
@@ -114,6 +125,7 @@ class Memory:
             timeout_s=self._timeout_s,
             mode="saas",
         )
+        self.jobs = JobOperations(self._client)
 
     # ========== Write API ==========
 
@@ -122,9 +134,13 @@ class Memory:
         conversation_id: str,
         messages: Sequence[Dict[str, Any]],
         *,
+        commit_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        device_no: Optional[str] = None,
         wait: bool = False,
         timeout_s: float = 60.0,
-    ) -> Optional["AddResult"]:
+    ) -> "AddResult":
         """Save conversation messages to memory.
 
         This is the primary way to store conversations. Messages are sent to
@@ -150,17 +166,23 @@ class Memory:
             - Memories are searchable after backend processing completes
             - Fire-and-forget by default; pass wait=True to block until done
         """
-        conv = self.conversation(conversation_id)
+        conv = self.conversation(
+            conversation_id,
+            group_id=group_id,
+            group_name=group_name,
+            device_no=device_no,
+        )
         for msg in messages:
             conv.add(msg)
-        if wait:
-            return conv.commit(wait=True, timeout_s=timeout_s)
-        conv.commit()  # Fire and forget
-        return None
+        return conv.commit(wait=wait, timeout_s=timeout_s, commit_id=commit_id)
 
     def conversation(
         self,
         conversation_id: str,
+        *,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        device_no: Optional[str] = None,
     ) -> "Conversation":
         """Create a conversation buffer for batch writes.
 
@@ -188,6 +210,9 @@ class Memory:
         return Conversation(
             client=self._client,
             conversation_id=conversation_id,
+            group_id=group_id,
+            group_name=group_name,
+            device_no=device_no,
             auto_timestamp=True,
         )
 
@@ -198,6 +223,7 @@ class Memory:
         query: str,
         *,
         limit: int = 10,
+        group_id: Optional[str] = None,
         session_id: Optional[str] = None,
         fail_silent: bool = False,
     ) -> SearchResult:
@@ -206,9 +232,9 @@ class Memory:
         Args:
             query: Search question (e.g., "我什么时候去西湖？")
             limit: Maximum number of results (default: 10)
-            session_id: Optional conversation/session ID to filter results.
-                When provided, only memories from that specific session are returned.
-                Use this for multi-tenant apps or to scope retrieval to a conversation.
+            group_id: Optional Router-native memory group ID to filter results.
+            session_id: Compatibility alias for group_id. When either is provided,
+                only memories from that group are returned.
             fail_silent: If True, return empty result on error instead of raising.
                 Use this to ensure memory failures don't break your agent.
 
@@ -232,22 +258,15 @@ class Memory:
             >>> # Returns empty SearchResult on error, never raises
 
         """
+        resolved_group_id = _resolve_group_id(group_id, session_id)
         t0 = time.perf_counter()
         try:
-            if self._device_no:
-                resp = self._client.retrieve_dialog_hybrid(
-                    query=query,
-                    session_id=session_id,
-                    top_k=limit,
-                    device_no=None,
-                )
-            else:
-                resp = self._client.retrieve_dialog_v2(
-                    query=query,
-                    session_id=session_id,
-                    topk=limit,
-                    with_answer=False,
-                )
+            resp = self._client.retrieve_dialog_v2(
+                query=query,
+                session_id=resolved_group_id,
+                topk=limit,
+                with_answer=False,
+            )
             return self._search_result_from_response(
                 query=query,
                 resp=resp,
@@ -272,6 +291,7 @@ class Memory:
         *,
         device_no: Optional[str] = None,
         limit: int = 10,
+        group_id: Optional[str] = None,
         session_id: Optional[str] = None,
         fail_silent: bool = False,
     ) -> SearchResult:
@@ -280,11 +300,12 @@ class Memory:
         if not effective_device_no:
             raise ValueError("device_no is required for hybrid retrieval")
 
+        resolved_group_id = _resolve_group_id(group_id, session_id)
         t0 = time.perf_counter()
         try:
             resp = self._client.retrieve_dialog_hybrid(
                 query=query,
-                session_id=session_id,
+                session_id=resolved_group_id,
                 top_k=limit,
                 device_no=effective_device_no,
             )
@@ -311,10 +332,23 @@ class Memory:
         latency_ms: float,
     ) -> SearchResult:
         items: List[MemoryItem] = []
+        evidence_details: List[EvidenceDetail] = []
         for e in resp.get("evidence_details") or []:
             text = str(e.get("text") or "").strip()
             if not text:
                 continue
+            evidence_details.append(
+                EvidenceDetail(
+                    event_id=str(e.get("event_id") or ""),
+                    text=text,
+                    source=(str(e.get("source")) if e.get("source") is not None else None),
+                    role=(str(e.get("role")) if e.get("role") is not None else None),
+                    sender_name=(str(e.get("sender_name")) if e.get("sender_name") is not None else None),
+                    atomic_facts=(list(e.get("atomic_facts")) if isinstance(e.get("atomic_facts"), list) else []),
+                    group_id=(str(e.get("group_id")) if e.get("group_id") is not None else None),
+                    timestamp=_parse_datetime(e.get("timestamp")),
+                )
+            )
             items.append(
                 MemoryItem(
                     text=text,
@@ -330,6 +364,8 @@ class Memory:
             items=items,
             latency_ms=latency_ms,
             strategy=resp.get("strategy"),
+            evidence_details=evidence_details,
+            requested_group_id=(str(resp.get("requested_group_id")) if resp.get("requested_group_id") is not None else None),
         )
 
     # ========== Lifecycle ==========
@@ -343,6 +379,33 @@ class Memory:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+
+class JobOperations:
+    """Read and wait for ingest jobs through the owning Memory instance."""
+
+    def __init__(self, client: MemoryClient) -> None:
+        self._client = client
+
+    def get(self, job_id: str) -> JobStatusV1:
+        return self._client.get_job(job_id)
+
+    def wait(
+        self,
+        job_id: str,
+        *,
+        timeout_s: float = 60.0,
+        poll_interval_s: float = 0.5,
+    ) -> JobStatusV1:
+        jid = str(job_id or "").strip()
+        if not jid:
+            raise ValueError("job_id is required")
+        return CommitHandle(
+            client=self._client,
+            job_id=jid,
+            session_id="",
+            commit_id="",
+        ).wait(timeout_s=timeout_s, poll_interval_s=poll_interval_s)
 
 
 class Conversation:
@@ -360,6 +423,9 @@ class Conversation:
         self,
         client: MemoryClient,
         conversation_id: str,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        device_no: Optional[str] = None,
         auto_timestamp: bool = True,
     ) -> None:
         """Initialize conversation buffer.
@@ -376,6 +442,9 @@ class Conversation:
 
         self._client = client
         self._conversation_id = cid
+        self._group_id = str(group_id).strip() if group_id else None
+        self._group_name = str(group_name).strip() if group_name else None
+        self._device_no = str(device_no).strip() if device_no else None
         self._buffer: List[CanonicalTurnV1] = []
         self._next_turn_index = 1
         self._cursor_last_committed: Optional[str] = None
@@ -393,18 +462,20 @@ class Conversation:
         Args:
             message: Message dict with at least "role" and "content" (or "text").
                 Supported fields:
-                - role: "user", "assistant", "tool", or "system"
+                - role: "user", "assistant", or "system"
                 - content or text: Message content
+                - turn_id (or id / uuid): Optional caller-defined message ID
                 - name: Optional speaker name
                 - timestamp: Optional ISO timestamp (auto-generated if auto_timestamp=True)
+                - refer_list (or referList): Optional referenced message IDs
 
         Example:
             >>> conv.add({"role": "user", "content": "Hello"})
             >>> conv.add({"role": "assistant", "content": "Hi there!"})
         """
         role = str(message.get("role") or "user").strip().lower()
-        if role not in ("user", "assistant", "tool", "system"):
-            raise ValueError("role must be one of: user, assistant, tool, system")
+        if role not in ("user", "assistant", "system"):
+            raise ValueError("role must be one of: user, assistant, system")
 
         # Support both "content" (OpenAI) and "text" (MemAura).
         text = str(
@@ -413,8 +484,20 @@ class Conversation:
         if not text.strip():
             raise ValueError("message content/text is empty")
 
-        turn_id = self._turn_id_from_index(self._next_turn_index)
+        provided_turn_id = message.get("turn_id") or message.get("id") or message.get("uuid")
+        turn_id = str(provided_turn_id).strip() if provided_turn_id else self._turn_id_from_index(self._next_turn_index)
+        if not turn_id:
+            raise ValueError("turn_id must not be empty")
         self._next_turn_index += 1
+
+        raw_refer_list = message.get("refer_list", message.get("referList"))
+        if raw_refer_list is not None and not isinstance(raw_refer_list, (list, tuple)):
+            raise ValueError("refer_list must be a list of non-empty strings")
+        refer_list = None
+        if raw_refer_list is not None:
+            refer_list = [str(value).strip() for value in raw_refer_list]
+            if any(not value for value in refer_list):
+                raise ValueError("refer_list must be a list of non-empty strings")
 
         # Handle timestamp: use provided, or auto-generate if auto_timestamp is enabled
         timestamp_iso = message.get("timestamp") or message.get("timestamp_iso")
@@ -429,12 +512,14 @@ class Conversation:
             text=text,
             name=str(message.get("name")).strip() if message.get("name") else None,
             timestamp_iso=timestamp_iso if timestamp_iso else None,
+            refer_list=refer_list,
         )
         self._buffer.append(turn)
 
     def commit(
         self,
         *,
+        commit_id: Optional[str] = None,
         wait: bool = False,
         timeout_s: float = 60.0,
     ) -> AddResult:
@@ -451,6 +536,8 @@ class Conversation:
             return AddResult(
                 conversation_id=self._conversation_id,
                 message_count=0,
+                session_id=self._conversation_id,
+                status="completed",
                 completed=True,
             )
 
@@ -460,22 +547,29 @@ class Conversation:
             return AddResult(
                 conversation_id=self._conversation_id,
                 message_count=0,
+                session_id=self._conversation_id,
+                status="completed",
                 completed=True,
             )
 
         handle = self._client.ingest_dialog_v1(
             session_id=self._conversation_id,
             turns=delta,
-            base_turn_id=self._cursor_last_committed,
+            commit_id=commit_id,
+            group_id=self._group_id,
+            group_name=self._group_name,
+            device_no=self._device_no,
         )
 
         # Update cursor
         self._cursor_last_committed = delta[-1].turn_id
 
+        status = handle.ack_status
         completed = False
         if wait and handle.job_id:
-            status = handle.wait(timeout_s=timeout_s)
-            completed = str(status.status).upper() == "COMPLETED"
+            job_status = handle.wait(timeout_s=timeout_s)
+            status = job_status.status
+            completed = is_successful_job_status(status)
 
         # Clear buffer after successful commit
         self._buffer.clear()
@@ -484,6 +578,9 @@ class Conversation:
             conversation_id=self._conversation_id,
             message_count=len(delta),
             job_id=handle.job_id if handle.job_id else None,
+            session_id=handle.session_id or self._conversation_id,
+            status=status,
+            status_url=handle.status_url,
             completed=completed,
         )
 
@@ -506,4 +603,5 @@ class Conversation:
 __all__ = [
     "Memory",
     "Conversation",
+    "JobOperations",
 ]

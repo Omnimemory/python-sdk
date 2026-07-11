@@ -86,27 +86,16 @@ def _turn_id_from_index(i: int) -> str:
 
 
 def _as_jsonable_turn(t: CanonicalTurnV1) -> Dict[str, Any]:
-    attachments: List[Dict[str, Any]] = []
-    for a in (t.attachments or [])[:]:
-        attachments.append(
-            {
-                "type": a.type,
-                "name": a.name,
-                "truncated": bool(a.truncated),
-                "sha256": a.sha256,
-                "ref": a.ref,
-            }
-        )
-    return {
+    payload: Dict[str, Any] = {
         "turn_id": t.turn_id,
         "role": t.role,
-        "name": t.name,
-        "speaker": t.name,  # Backend uses "speaker" for entity extraction
-        "timestamp_iso": t.timestamp_iso,
-        "text": t.text,
-        "attachments": (attachments if attachments else None),
-        "meta": (dict(t.meta) if isinstance(t.meta, dict) else None),
+        "content": t.text,
+        "sender_name": t.name,
+        "timestamp": t.timestamp_iso,
     }
+    if t.refer_list is not None:
+        payload["refer_list"] = list(t.refer_list)
+    return payload
 
 
 def _coerce_job_status(payload: Dict[str, Any]) -> JobStatusV1:
@@ -135,20 +124,52 @@ class CommitHandle:
     job_id: str
     session_id: str
     commit_id: str
+    ack_status: str = "queued"
+    status_url: Optional[str] = None
 
     def status(self) -> JobStatusV1:
         return self.client.get_job(self.job_id)
 
     def wait(self, *, timeout_s: float = 30.0, poll_interval_s: float = 0.5) -> JobStatusV1:
-        deadline = time.time() + float(timeout_s)
+        deadline = time.monotonic() + float(timeout_s)
         last: Optional[JobStatusV1] = None
         while True:
             last = self.status()
-            if str(last.status).upper() == "COMPLETED":
+            if _is_terminal_job_status(last.status):
                 return last
-            if time.time() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return last
-            time.sleep(float(poll_interval_s))
+            time.sleep(min(float(poll_interval_s), remaining))
+
+
+_TERMINAL_JOB_STATUSES = {
+    "accumulated",
+    "canceled",
+    "cancelled",
+    "completed",
+    "done",
+    "error",
+    "failed",
+    "success",
+    "succeeded",
+}
+
+_SUCCESSFUL_JOB_STATUSES = {
+    "accumulated",
+    "completed",
+    "done",
+    "success",
+    "succeeded",
+}
+
+
+def _is_terminal_job_status(status: str) -> bool:
+    return str(status or "").strip().lower() in _TERMINAL_JOB_STATUSES
+
+
+def is_successful_job_status(status: str) -> bool:
+    return str(status or "").strip().lower() in _SUCCESSFUL_JOB_STATUSES
 
 
 class MemoryClient:
@@ -207,7 +228,8 @@ class MemoryClient:
         session_id: str,
         turns: Sequence[CanonicalTurnV1],
         commit_id: Optional[str] = None,
-        base_turn_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
         client_meta: Optional[Dict[str, Any]] = None,
         device_no: Optional[str] = None,
     ) -> CommitHandle:
@@ -220,11 +242,15 @@ class MemoryClient:
         cid = str(commit_id or uuid.uuid4())
         body: Dict[str, Any] = {
             "session_id": sid,
-            "memory_domain": str(self.memory_domain),
             "turns": [_as_jsonable_turn(t) for t in turns],
             "commit_id": cid,
-            "cursor": {"base_turn_id": (str(base_turn_id).strip() if base_turn_id else None)},
         }
+        gid = str(group_id).strip() if group_id else None
+        gname = str(group_name).strip() if group_name else None
+        if gid:
+            body["group_id"] = gid
+        if gname:
+            body["group_name"] = gname
         effective_device_no = self._effective_device_no(device_no or _device_no_from_meta(client_meta))
 
         # Only attach user_tokens/client_meta when not in SaaS mode, except
@@ -242,7 +268,14 @@ class MemoryClient:
             device_no=effective_device_no,
         )
         job_id = str(payload.get("job_id") or "").strip()
-        return CommitHandle(client=self, job_id=job_id, session_id=sid, commit_id=cid)
+        return CommitHandle(
+            client=self,
+            job_id=job_id,
+            session_id=str(payload.get("session_id") or sid),
+            commit_id=cid,
+            ack_status=str(payload.get("status") or "queued"),
+            status_url=(str(payload.get("status_url")) if payload.get("status_url") else None),
+        )
 
     def get_job(self, job_id: str) -> JobStatusV1:
         jid = str(job_id or "").strip()
@@ -279,20 +312,7 @@ class MemoryClient:
         if strategy_norm not in ("dialog_v1", "dialog_v2"):
             strategy_norm = "dialog_v2"
         effective_device_no = self._effective_device_no(device_no or _device_no_from_meta(client_meta))
-        body: Dict[str, Any] = {
-            "memory_domain": str(self.memory_domain),
-            "group_id": sid,
-            "query": q,
-            "strategy": strategy_norm,
-            "top_k": int(topk),
-            "task": str(task or "GENERAL"),
-            "debug": bool(debug),
-            "with_answer": bool(with_answer),
-            "backend": str(backend or "tkg"),
-            "tkg_explain": bool(tkg_explain),
-            "entity_hints": (list(entity_hints) if entity_hints else None),
-            "time_hints": (dict(time_hints) if isinstance(time_hints, dict) else None),
-        }
+        body: Dict[str, Any] = {"group_id": sid, "query": q, "top_k": int(topk)}
         # In SaaS mode, gateway injects x-tenant-id header; SDK should not send tenant_id in body.
         # Only attach tenant_id/user_tokens/client_meta when not in SaaS mode.
         if not saas_mode:
