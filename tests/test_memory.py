@@ -66,6 +66,8 @@ class TestPackageMetadata:
         assert "resume_publish" in release_text
         assert "id-token: write" in release_text
         assert "PYPI_API_TOKEN" not in release_text
+        assert "gh release create" in release_text
+        assert "--verify-tag" in release_text
 
     def test_build_metadata_supports_python_38_setuptools(self):
         root = Path(__file__).resolve().parents[1]
