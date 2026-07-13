@@ -2,7 +2,7 @@
 
 All notable user-visible changes are documented here.
 
-## 1.0.0 - Unreleased
+## 0.0.1 - Unreleased
 
 ### Added
 
