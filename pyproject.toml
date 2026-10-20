@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Python SDK for the MemAura memory service"
 readme = "README.md"
 requires-python = ">=3.8"
-license = "MIT"
-license-files = ["LICENSE"]
+# Python 3.8 cannot install setuptools 77+, so retain the PEP 621 table form.
+license = {text = "MIT"}
 authors = [{name = "MemAura"}]
 keywords = ["ai", "memory", "agent", "llm", "vector-search", "long-term-memory"]
 classifiers = [
