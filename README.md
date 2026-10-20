@@ -59,6 +59,61 @@ for card in result.cards:
     print(card.content)
 ```
 
+### `MemoryV4`
+
+```python
+MemoryV4(api_key, *, endpoint=None, device_no=None, timeout_s=30.0)
+```
+
+`endpoint` defaults to `https://api.omnimemory.cn/api/v3`. `device_no` sets the
+default `X-Device-No` header and can be overridden by an individual operation.
+`MemoryV4` is a context manager and also exposes `close()`.
+
+### `ingest(turns, *, language="auto", timezone=None, device_no=None, wait_for="staged", wait_timeout_seconds=120.0)`
+
+Calls `POST /memory/ingest_4` and returns `V4Job`. `turns` must be non-empty;
+each turn requires `content` and may include `role`, `turn_id`, `timestamp`,
+`sender_name`, and `refer_list`. `language` accepts `auto`, `zh`, or `en`;
+`wait_for` accepts `staged` or `searchable`; `wait_timeout_seconds` must be in
+the range `(0, 300]`.
+
+### `retrieve(query, **filters)`
+
+Calls `POST /memory/retrieval_4` and returns `V4RetrievalResult`.
+
+| Argument | Type/default | Meaning |
+| --- | --- | --- |
+| `query` | `str`, required | Non-empty retrieval query. |
+| `top_k` | optional `int` | Result limit from 1 to 100. |
+| `vector_weight` | `float = 0.8` | Vector/text fusion weight from 0 to 1. |
+| `tag_keys` | sequence | Hard tag filters. |
+| `role` | optional `str` | Card role filter. |
+| `scope_type` | `account`, `api_key`, or `device` | Memory scope. |
+| `start_time`, `end_time` | optional `str` | Explicit time range. |
+| `entity_id` | optional `str` | Entity filter. |
+| `entity_match_mode` | `primary`, `involved`, or `source` | How the entity must match. |
+| `participant_roles` | sequence | Participant-role filters. |
+| `device_no` | optional `str` | Per-operation device override. |
+| `include_query_analysis` | `bool = False` | Include normalized query analysis. |
+| `include_details` | `bool = False` | Preserve the complete response in `details`. |
+
+### `memory.jobs.get(job_id)` and `memory.jobs.wait(job_id, *, timeout_s=300.0, poll_interval_s=1.0)`
+
+`get()` calls `GET /memory/ingest_4/jobs/{job_id}`. `wait()` polls only that
+job. Pending states are `queued`, `staged`, `processing`, `buffered`, and
+`indexing`; terminal states are `succeeded` and `failed`. A local deadline
+raises `V4JobTimeoutError`, whose `job_id` and `last_job` fields allow polling
+to continue.
+
+### V4 return models
+
+| Model | Fields |
+| --- | --- |
+| `V4Job` | `job_id`, optional `status`, `wait_timed_out`, optional `error` |
+| `V4Episode` | `episode_id`, `summary` |
+| `V4Card` | `card_id`, `role`, `content`, `episodes` |
+| `V4RetrievalResult` | `cards`, optional `query_analysis`, optional `details`; supports `bool()` and `len()` |
+
 V4 writes are never retried automatically. If a submission fails before a
 `job_id` is returned, investigate the outcome before submitting the turns
 again. A local wait timeout does not cancel the job; continue polling the same
@@ -162,6 +217,9 @@ waits for the corresponding ingest job.
 | `SearchResult` | Iterable result container with `items`, `evidence_details`, latency, error, and `to_prompt()`. |
 | `AddResult` | Ingest acknowledgement with conversation, job, session, status, and completion fields. |
 
+Both `Memory` and `MemoryV4` support `with` and expose `close()` for releasing
+their HTTP client.
+
 ## Error Handling
 
 ```python
@@ -174,6 +232,13 @@ except MemAuraRateLimitError as exc:
 except MemAuraClientError as exc:
     print(exc)
 ```
+
+The public hierarchy is `MemAuraClientError`, `MemAuraHttpError`,
+`MemAuraAuthError`, `MemAuraForbiddenError`, `MemAuraRateLimitError`,
+`MemAuraQuotaExceededError`, `MemAuraPayloadTooLargeError`,
+`MemAuraValidationError`, and `MemAuraServerError`. HTTP errors expose
+`status_code`, `error`, `request_id`, and `retry_after_s`. Local input errors
+may also raise `ValueError`; V4 job-wait expiry raises `V4JobTimeoutError`.
 
 ## Project Docs
 

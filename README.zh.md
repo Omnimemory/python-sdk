@@ -56,6 +56,58 @@ for card in result.cards:
     print(card.content)
 ```
 
+### `MemoryV4`
+
+```python
+MemoryV4(api_key, *, endpoint=None, device_no=None, timeout_s=30.0)
+```
+
+`endpoint` 默认为 `https://api.omnimemory.cn/api/v3`。`device_no` 设置默认
+`X-Device-No` 请求头，单次操作可覆盖。`MemoryV4` 支持上下文管理器，也提供 `close()`。
+
+### `ingest(turns, *, language="auto", timezone=None, device_no=None, wait_for="staged", wait_timeout_seconds=120.0)`
+
+调用 `POST /memory/ingest_4` 并返回 `V4Job`。`turns` 不能为空；每条 turn 必须包含
+`content`，还可包含 `role`、`turn_id`、`timestamp`、`sender_name` 和 `refer_list`。
+`language` 可取 `auto`、`zh` 或 `en`；`wait_for` 可取 `staged` 或 `searchable`；
+`wait_timeout_seconds` 必须在 `(0, 300]` 范围内。
+
+### `retrieve(query, **filters)`
+
+调用 `POST /memory/retrieval_4` 并返回 `V4RetrievalResult`。
+
+| 参数 | 类型/默认值 | 说明 |
+| --- | --- | --- |
+| `query` | 必填 `str` | 非空检索问题。 |
+| `top_k` | 可选 `int` | 1–100 的结果数量。 |
+| `vector_weight` | `float = 0.8` | 0–1 的向量/文本融合权重。 |
+| `tag_keys` | sequence | 硬标签过滤。 |
+| `role` | 可选 `str` | Card 角色过滤。 |
+| `scope_type` | `account`、`api_key` 或 `device` | 记忆作用域。 |
+| `start_time`, `end_time` | 可选 `str` | 显式时间范围。 |
+| `entity_id` | 可选 `str` | 实体过滤。 |
+| `entity_match_mode` | `primary`、`involved` 或 `source` | 实体匹配方式。 |
+| `participant_roles` | sequence | 参与角色过滤。 |
+| `device_no` | 可选 `str` | 单次操作设备号覆盖。 |
+| `include_query_analysis` | `bool = False` | 返回查询分析。 |
+| `include_details` | `bool = False` | 在 `details` 中保留完整响应。 |
+
+### `memory.jobs.get(job_id)` 与 `memory.jobs.wait(job_id, *, timeout_s=300.0, poll_interval_s=1.0)`
+
+`get()` 调用 `GET /memory/ingest_4/jobs/{job_id}`；`wait()` 只轮询该任务。
+等待状态为 `queued`、`staged`、`processing`、`buffered` 和 `indexing`，终态为
+`succeeded` 与 `failed`。本地超时时抛出 `V4JobTimeoutError`，其中的 `job_id` 和
+`last_job` 可用于继续查询。
+
+### V4 返回模型
+
+| 模型 | 字段 |
+| --- | --- |
+| `V4Job` | `job_id`、可选 `status`、`wait_timed_out`、可选 `error` |
+| `V4Episode` | `episode_id`、`summary` |
+| `V4Card` | `card_id`、`role`、`content`、`episodes` |
+| `V4RetrievalResult` | `cards`、可选 `query_analysis`、可选 `details`；支持 `bool()` 与 `len()` |
+
 V4 写入不会自动重试。提交失败且尚未取得 `job_id` 时，应先排查实际结果，再决定是否重新提交。
 本地等待超时不会取消后台任务，请继续查询同一个 `job_id`。检索支持 `top_k`、向量/文本融合权重、
 硬标签、角色和作用域、显式时间范围，以及实体和参与角色过滤。
@@ -125,7 +177,7 @@ terminal = memory.jobs.wait(job.job_id, timeout_s=60)
 
 ### 对话缓冲区
 
-当消息逐条到达时，可以使用对话缓冲区。
+当消息逐条到达时，可以使用 `Conversation` 对话缓冲区。
 
 ```python
 with memory.conversation("conv-003") as conversation:
@@ -144,6 +196,8 @@ with memory.conversation("conv-003") as conversation:
 | `SearchResult` | 可迭代结果容器，包含 `items`、`evidence_details`、延迟、错误和 `to_prompt()`。 |
 | `AddResult` | 写入 ack，包含对话、job、session、状态和完成字段。 |
 
+`Memory` 与 `MemoryV4` 都支持 `with`，并提供 `close()` 释放 HTTP 客户端。
+
 ## 错误处理
 
 ```python
@@ -156,6 +210,13 @@ except MemAuraRateLimitError as exc:
 except MemAuraClientError as exc:
     print(exc)
 ```
+
+公开错误层级包括 `MemAuraClientError`、`MemAuraHttpError`、
+`MemAuraAuthError`、`MemAuraForbiddenError`、`MemAuraRateLimitError`、
+`MemAuraQuotaExceededError`、`MemAuraPayloadTooLargeError`、
+`MemAuraValidationError` 和 `MemAuraServerError`。HTTP 错误提供 `status_code`、
+`error`、`request_id` 与 `retry_after_s`。本地参数错误也可能抛出 `ValueError`；
+V4 任务等待超时会抛出 `V4JobTimeoutError`。
 
 ## 项目文档
 
