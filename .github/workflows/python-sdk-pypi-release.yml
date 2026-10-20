@@ -162,7 +162,7 @@ jobs:
       - name: Test and compile release source
         run: |
           set -euo pipefail
-          python -m pytest -q
+          python -m pytest --cov=memaura --cov-branch --cov-fail-under=100 -q
           PYTHONPYCACHEPREFIX=/tmp/memaura-pyc python -m compileall -q memaura tests
       - name: Build and validate release artifacts
         run: |

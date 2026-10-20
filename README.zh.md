@@ -218,6 +218,16 @@ except MemAuraClientError as exc:
 `error`、`request_id` 与 `retry_after_s`。本地参数错误也可能抛出 `ValueError`；
 V4 任务等待超时会抛出 `V4JobTimeoutError`。
 
+## 测试覆盖率
+
+CI 要求全部手写 `memaura` 包同时达到 100% 语句覆盖率和分支覆盖率。本地可运行同一门禁：
+
+```bash
+python -m pytest --cov=memaura --cov-branch --cov-fail-under=100
+```
+
+本 Python 仓库没有将生成产物纳入覆盖率口径。
+
 ## 项目文档
 
 - [贡献指南](CONTRIBUTING.zh.md) | [Contributing](CONTRIBUTING.md)

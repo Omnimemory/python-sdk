@@ -240,6 +240,17 @@ The public hierarchy is `MemAuraClientError`, `MemAuraHttpError`,
 `status_code`, `error`, `request_id`, and `retry_after_s`. Local input errors
 may also raise `ValueError`; V4 job-wait expiry raises `V4JobTimeoutError`.
 
+## Test Coverage
+
+CI requires 100% statement and branch coverage for the complete hand-written
+`memaura` package. Run the same gate locally with:
+
+```bash
+python -m pytest --cov=memaura --cov-branch --cov-fail-under=100
+```
+
+Generated artifacts are not part of this repository's Python coverage scope.
+
 ## Project Docs
 
 - [Contributing](CONTRIBUTING.md) | [贡献指南](CONTRIBUTING.zh.md)
