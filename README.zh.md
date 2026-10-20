@@ -34,7 +34,33 @@ for item in result:
     print(item.text)
 ```
 
-## API
+## V4 Card/Episode API
+
+`MemoryV4` 是面向当前 `/api/v3` 数据面的新增客户端；原有 `Memory` 类继续服务已有的
+`/api/v2` 接入，不会因本次升级改变语义。
+
+```python
+from memaura import MemoryV4
+
+memory = MemoryV4(api_key="qbk_xxx", device_no="DEVICE-001")
+ack = memory.ingest([
+    {"role": "user", "content": "我偏好周三下午进行产品评审。"},
+    {"role": "assistant", "content": "好的，已记下。"},
+])
+job = memory.jobs.wait(ack.job_id, timeout_s=300)
+if job.status == "failed":
+    raise RuntimeError(job.error)
+
+result = memory.retrieve("我偏好什么时候进行产品评审？", top_k=5)
+for card in result.cards:
+    print(card.content)
+```
+
+V4 写入不会自动重试。提交失败且尚未取得 `job_id` 时，应先排查实际结果，再决定是否重新提交。
+本地等待超时不会取消后台任务，请继续查询同一个 `job_id`。检索支持 `top_k`、向量/文本融合权重、
+硬标签、角色和作用域、显式时间范围，以及实体和参与角色过滤。
+
+## 旧版 V2 API
 
 ### `Memory`
 

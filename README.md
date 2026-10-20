@@ -37,7 +37,35 @@ for item in result:
     print(item.text)
 ```
 
-## API
+## V4 Card/Episode API
+
+`MemoryV4` is the additive client for the current `/api/v3` data plane. The
+legacy `Memory` class remains available for existing `/api/v2` integrations.
+
+```python
+from memaura import MemoryV4
+
+memory = MemoryV4(api_key="qbk_xxx", device_no="DEVICE-001")
+ack = memory.ingest([
+    {"role": "user", "content": "I prefer product reviews on Wednesday afternoons."},
+    {"role": "assistant", "content": "Noted."},
+])
+job = memory.jobs.wait(ack.job_id, timeout_s=300)
+if job.status == "failed":
+    raise RuntimeError(job.error)
+
+result = memory.retrieve("When do I prefer product reviews?", top_k=5)
+for card in result.cards:
+    print(card.content)
+```
+
+V4 writes are never retried automatically. If a submission fails before a
+`job_id` is returned, investigate the outcome before submitting the turns
+again. A local wait timeout does not cancel the job; continue polling the same
+`job_id`. Retrieval supports `top_k`, weighted vector/text fusion, hard tags,
+role and scope selection, explicit time ranges, and entity/participant filters.
+
+## Legacy V2 API
 
 ### `Memory`
 

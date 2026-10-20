@@ -22,6 +22,14 @@ For more information, see the MemAura SDK documentation.
 """
 
 from .memory import Memory, Conversation
+from .v4 import (
+    MemoryV4,
+    V4Card,
+    V4Episode,
+    V4Job,
+    V4JobTimeoutError,
+    V4RetrievalResult,
+)
 from .models import (
     MemoryItem,
     EvidenceDetail,
@@ -41,7 +49,7 @@ from .client import (
 )
 
 # Version
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     # Version
@@ -49,6 +57,12 @@ __all__ = [
     # High-level API (recommended for most users)
     "Memory",
     "Conversation",
+    "MemoryV4",
+    "V4Card",
+    "V4Episode",
+    "V4Job",
+    "V4JobTimeoutError",
+    "V4RetrievalResult",
     "MemoryItem",
     "EvidenceDetail",
     "SearchResult",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0 - 2026-10-20
+
+- Add an additive `MemoryV4` client for V4 ingest, job polling, and compact Card/Episode retrieval.
+- Preserve the legacy `Memory` V2 API without behavior changes.
+- Do not automatically retry V4 writes.
+
 All notable user-visible changes are documented here.
 
 ## 0.0.1 - 2026-07-13

@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pytest -q
+          python -m pytest tests/test_v4.py --cov=memaura.v4 --cov-branch --cov-fail-under=100 -q
           PYTHONPYCACHEPREFIX=/tmp/memaura-pyc python -m compileall -q memaura tests
       - name: Build and validate distributions
         run: |

@@ -21,6 +21,12 @@ PUBLIC_EXPORTS = {
     "__version__",
     "Memory",
     "Conversation",
+    "MemoryV4",
+    "V4Card",
+    "V4Episode",
+    "V4Job",
+    "V4JobTimeoutError",
+    "V4RetrievalResult",
     "MemoryItem",
     "EvidenceDetail",
     "SearchResult",
@@ -171,8 +177,8 @@ class TestPackageMetadata:
         root = Path(__file__).resolve().parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
 
-        assert memaura.__version__ == "0.0.1"
-        assert 'version = "0.0.1"' in pyproject
+        assert memaura.__version__ == "0.1.0"
+        assert 'version = "0.1.0"' in pyproject
         assert '"Programming Language :: Python :: 3.13"' in pyproject
 
 
